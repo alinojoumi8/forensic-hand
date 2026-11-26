@@ -55,8 +55,16 @@ def _seal(case: Case, timestamp: bool, url: str) -> int:
         _error(str(exc))
         _say("Time stamp: FAILED. The seal is kept. Try again later with: fhand stamp <case>")
         return 1
-    _say(f"Time stamp: {stamp['gen_time']} from {stamp['tsa_url']} (only the seal hash was sent)")
+    _say_stamp(stamp)
     return 0
+
+
+def _say_stamp(stamp: dict) -> None:
+    _say(f"Time stamp: {stamp['gen_time']} from {stamp['tsa_url']} (only the seal hash was sent)")
+    if stamp["signature_check"] == "ok":
+        _say(f"Signature:  checked ({stamp['signature_detail']})")
+    else:
+        _say(f"Signature:  NOT checked: {stamp['signature_detail']}")
 
 
 # ---------------------------------------------------------------- commands
@@ -88,8 +96,7 @@ def cmd_seal(args) -> int:
 
 
 def cmd_stamp(args) -> int:
-    stamp = timestamp_seal(Case.open(args.case), url=args.tsa_url)
-    _say(f"Time stamp: {stamp['gen_time']} from {stamp['tsa_url']} (only the seal hash was sent)")
+    _say_stamp(timestamp_seal(Case.open(args.case), url=args.tsa_url))
     return 0
 
 

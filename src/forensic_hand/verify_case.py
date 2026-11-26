@@ -13,8 +13,13 @@ What it checks
     3. Each seal file matches the ledger, and no seal file is missing from the ledger.
     4. Each time stamp token is for its seal file. OpenSSL checks the signature of the token.
 
+Exit codes
+    0 OK, 1 problems found, 3 incomplete (no problem found, but a check that was asked for could not run).
+
 What it cannot show
-    - Events removed from the END of the ledger after the last seal.
+    - Whether you have the newest copy. An older copy, or a copy with the last events, seals or
+      time stamps removed, can still pass. Compare the ledger head or the last seal hash with a
+      value that you received by a separate, trusted route.
     - Whether a file was genuine before it was put into the case.
 
 Ledger line format
@@ -277,12 +282,16 @@ def export_system_roots(target: str) -> int:
     return len(certs)
 
 
-def openssl_verify_timestamp(tsr_path, data_path, info: dict, ca_file=None, openssl=None) -> tuple[str, str]:
+def openssl_verify_timestamp(tsr_bytes: bytes, digest_hex: str, info: dict, ca_file=None, openssl=None) -> tuple[str, str]:
     """Check the signature of a time stamp with OpenSSL. Return (status, detail).
 
     status is "ok", "failed" or "unavailable".
-    The certificate chain is checked at the time of the stamp, not at today's date.
+    OpenSSL gets a private copy of the response bytes and the digest that Python already checked,
+    so its verdict is about the same bytes. The certificate chain is checked at the time of the
+    stamp, not at today's date.
     """
+    if not HEX64.match(str(digest_hex)):
+        return "failed", "the seal digest is not a SHA-256 value"
     exe = find_openssl(openssl)
     if exe is None:
         return "unavailable", "OpenSSL was not found (install it, or use --openssl PATH)"
@@ -298,13 +307,16 @@ def openssl_verify_timestamp(tsr_path, data_path, info: dict, ca_file=None, open
             if count == 0:
                 return "unavailable", "this computer has no root certificates (use --ca-file)"
             source = "roots from the trust store of this computer"
+        response = os.path.join(tmp, "response.tsr")
+        with open(response, "wb") as handle:
+            handle.write(tsr_bytes)
         # Some OpenSSL installs point at a configuration file that does not exist, and then stop.
         # Give OpenSSL an empty one, so that the check does not depend on the install.
         config = os.path.join(tmp, "openssl.cnf")
         with open(config, "w", encoding="ascii") as handle:
             handle.write("# empty on purpose\n")
         env = dict(os.environ, OPENSSL_CONF=config)
-        cmd = [exe, "ts", "-verify", "-in", str(tsr_path), "-data", str(data_path), "-CAfile", roots]
+        cmd = [exe, "ts", "-verify", "-in", response, "-digest", digest_hex, "-CAfile", roots]
         if info.get("gen_time_epoch") is not None:
             cmd += ["-attime", str(info["gen_time_epoch"])]
         try:
@@ -326,19 +338,49 @@ def openssl_verify_timestamp(tsr_path, data_path, info: dict, ca_file=None, open
 
 # ---------------------------------------------------------------- the case check
 
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _label(value) -> str:
+    """Text from the ledger, made safe to print."""
+    return re.sub(r"[^\w.-]", "?", str(value))[:40]
+
+
+def _read(path: Path, what: str, problems: list[str]) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        problems.append(f"{what}: file cannot be read ({path.name}): {exc}")
+        return None
+
+
 def verify_case(case_dir, ca_file=None, openssl=None, check_tsa_signature=True) -> dict:
-    root = Path(case_dir)
+    """Check a case folder. The result status is "ok", "problems" or "incomplete".
+
+    "incomplete" means: no problem was found, but a check that was asked for could not run.
+    The checker fails closed: an unexpected error is a problem, never a pass.
+    """
     problems: list[str] = []
     notes: list[str] = []
-    summary = {"ledger_entries": 0, "ledger_head": ZERO_HASH, "evidence_files": 0, "seals": 0, "timestamps": 0}
+    unchecked: list[str] = []
+    summary = {"ledger_entries": 0, "ledger_head": ZERO_HASH, "evidence_files": 0, "seals": 0,
+               "timestamps": 0, "timestamps_signature_ok": 0, "last_seal": None}
+    try:
+        _verify(Path(case_dir), problems, notes, unchecked, summary, ca_file, openssl, check_tsa_signature)
+    except Exception as exc:  # noqa: BLE001 - fail closed
+        problems.append(f"the check stopped on an unexpected error ({type(exc).__name__}: {exc}); "
+                        "the case is NOT verified")
+    status = "problems" if problems else "incomplete" if unchecked else "ok"
+    return {"ok": status == "ok", "status": status, "problems": problems, "unchecked": unchecked,
+            "notes": notes, "summary": summary}
 
-    def result() -> dict:
-        return {"ok": not problems, "problems": problems, "notes": notes, "summary": summary}
 
+def _verify(root: Path, problems, notes, unchecked, summary, ca_file, openssl, check_signature) -> None:
     ledger_path = root / LEDGER_NAME
     if not ledger_path.is_file():
         problems.append(f"this folder has no {LEDGER_NAME}: it is not a case folder")
-        return result()
+        return
     entries, errors = parse_ledger(ledger_path)
     problems.extend(errors)
     summary["ledger_entries"] = len(entries)
@@ -348,73 +390,94 @@ def verify_case(case_dir, ca_file=None, openssl=None, check_tsa_signature=True) 
         problems.append("ledger does not start with a case.created event")
 
     _check_evidence(root, entries, problems, summary)
-    seal_events = _check_seals(root, entries, problems, summary)
-    _check_timestamps(root, entries, seal_events, problems, notes, summary,
-                      ca_file, openssl, check_tsa_signature)
+    seals = _check_seals(root, entries, problems, summary)
+    _check_timestamps(root, entries, seals, problems, notes, unchecked, summary, ca_file, openssl, check_signature)
 
-    if not seal_events:
-        notes.append("the case has no seal yet")
-    else:
-        last = max(event["seq"] for event in seal_events.values())
-        newer = [e for e in entries[last + 1:] if e["type"] != "seal.timestamped"]
-        if newer:
-            notes.append(f"{len(newer)} ledger event(s) are newer than the last seal")
-    return result()
+    if not seals:
+        notes.append("the case has no valid seal yet")
+        return
+    last_no = max(seals)
+    summary["last_seal"] = {"seal_no": last_no, "sha256": seals[last_no]["data"]["sha256"]}
+    last = max(event["seq"] for event in seals.values())
+    newer = [e for e in entries[last + 1:] if e["type"] != "seal.timestamped"]
+    if newer:
+        notes.append(f"{len(newer)} ledger event(s) are newer than the last seal")
 
 
 def _check_evidence(root: Path, entries: list[dict], problems: list[str], summary: dict) -> None:
-    recorded: dict[str, dict] = {}
+    by_path: dict[str, list[dict]] = {}
     for entry in entries:
         if entry["type"] != "evidence.added":
             continue
         data = entry["data"]
         stored = data.get("stored_as")
         if not isinstance(stored, str) or not EVIDENCE_PATH.match(stored):
-            problems.append(f"evidence {data.get('id')}: the ledger holds an unsafe file path")
+            problems.append(f"evidence {_label(data.get('id'))}: the ledger holds an unsafe file path")
             continue
-        slot = recorded.setdefault(stored, {"ids": [], "data": data})
-        slot["ids"].append(str(data.get("id")))
-    for stored, slot in sorted(recorded.items()):
-        ids, data = ", ".join(slot["ids"]), slot["data"]
+        by_path.setdefault(stored, []).append(data)
+    for stored, records in sorted(by_path.items()):
+        ids = ", ".join(_label(r.get("id")) for r in records)
         path = root / stored
         if not path.is_file():
             problems.append(f"evidence {ids}: file is missing ({stored})")
             continue
-        actual = hash_file(path)
-        if any(actual[key] != data.get(key) for key in ("sha256", "blake2b", "size")):
-            problems.append(f"evidence {ids}: file content does not match the ledger ({stored})")
+        try:
+            actual = hash_file(path)
+        except OSError as exc:
+            problems.append(f"evidence {ids}: file cannot be read ({stored}): {exc}")
             continue
-        summary["evidence_files"] += 1
+        # Each record that names this file must match it, not only the first one.
+        wrong = [r for r in records if any(actual[key] != r.get(key) for key in ("sha256", "blake2b", "size"))]
+        if wrong:
+            bad_ids = ", ".join(_label(r.get("id")) for r in wrong)
+            problems.append(f"evidence {bad_ids}: file content does not match the ledger ({stored})")
+            continue
+        summary["evidence_files"] += len(records)
     folder = root / "evidence"
     if folder.is_dir():
         for path in sorted(folder.iterdir()):
-            if f"evidence/{path.name}" not in recorded:
+            if f"evidence/{path.name}" not in by_path:
                 problems.append(f"evidence folder holds a file that the ledger does not know: {path.name}")
 
 
 def _check_seals(root: Path, entries: list[dict], problems: list[str], summary: dict) -> dict[int, dict]:
-    seal_events: dict[int, dict] = {}
+    """Return the seal events that pass every check, by seal number."""
+    candidates: dict[int, dict] = {}
     for entry in entries:
-        if entry["type"] == "seal.created":
-            seal_events[entry["data"].get("seal_no")] = entry
-    known_files = {event["data"].get("file") for event in seal_events.values()}
+        if entry["type"] != "seal.created":
+            continue
+        number = entry["data"].get("seal_no")
+        if not _is_int(number) or number < 1:
+            problems.append(f"seal {_label(number)}: the ledger holds an invalid seal number")
+        elif number in candidates:
+            problems.append(f"seal {number}: the ledger holds this seal number more than once")
+        else:
+            candidates[number] = entry
+    known_files = {e["data"].get("file") for e in candidates.values() if isinstance(e["data"].get("file"), str)}
     folder = root / "seals"
     if folder.is_dir():
         for path in sorted(folder.glob("*.json")):
             if f"seals/{path.name}" not in known_files:
                 problems.append(f"seal file {path.name} is not in the ledger (the ledger may be cut short)")
-    for number, event in sorted(seal_events.items(), key=lambda kv: str(kv[0])):
+
+    valid: dict[int, dict] = {}
+    for number, event in sorted(candidates.items()):
         data = event["data"]
-        name = data.get("file")
-        if not isinstance(name, str) or not SEAL_PATH.match(name):
-            problems.append(f"seal {number}: the ledger holds an unsafe file path")
+        name, digest = data.get("file"), data.get("sha256")
+        if not isinstance(name, str) or not SEAL_PATH.match(name) or name != f"seals/seal-{number:04d}.json":
+            problems.append(f"seal {number}: the ledger holds an invalid seal file path")
+            continue
+        if not isinstance(digest, str) or not HEX64.match(digest):
+            problems.append(f"seal {number}: the ledger holds an invalid seal hash")
             continue
         path = root / name
         if not path.is_file():
             problems.append(f"seal {number}: seal file is missing")
             continue
-        raw = path.read_bytes()
-        if sha256_hex(raw) != data.get("sha256"):
+        raw = _read(path, f"seal {number}", problems)
+        if raw is None:
+            continue
+        if sha256_hex(raw) != digest:
             problems.append(f"seal {number}: seal file was changed")
             continue
         try:
@@ -424,7 +487,7 @@ def _check_seals(root: Path, entries: list[dict], problems: list[str], summary: 
         except (ValueError, KeyError, TypeError):
             problems.append(f"seal {number}: seal file cannot be read")
             continue
-        if not isinstance(seq, int) or not 0 <= seq < len(entries) or entries[seq]["hash"] != head:
+        if not _is_int(seq) or not 0 <= seq < len(entries) or entries[seq]["hash"] != head:
             problems.append(f"seal {number}: the ledger does not match the sealed state")
             continue
         if seq != event["seq"] - 1:
@@ -435,30 +498,42 @@ def _check_seals(root: Path, entries: list[dict], problems: list[str], summary: 
         if listed != expected:
             problems.append(f"seal {number}: the evidence list in the seal does not match the ledger")
             continue
+        valid[number] = event
         summary["seals"] += 1
-    return seal_events
+    return valid
 
 
-def _check_timestamps(root, entries, seal_events, problems, notes, summary, ca_file, openssl, check_signature) -> None:
+def _check_timestamps(root, entries, seals, problems, notes, unchecked, summary, ca_file, openssl, check_signature) -> None:
     stamp_events = [e for e in entries if e["type"] == "seal.timestamped"]
-    known_files = {e["data"].get("tsr_file") for e in stamp_events}
+    known_files = {e["data"].get("tsr_file") for e in stamp_events if isinstance(e["data"].get("tsr_file"), str)}
     folder = root / "seals"
     if folder.is_dir():
         for path in sorted(folder.glob("*.tsr")):
             if f"seals/{path.name}" not in known_files:
                 problems.append(f"time stamp file {path.name} is not in the ledger (the ledger may be cut short)")
+    stamped: set[int] = set()
     for event in stamp_events:
         data = event["data"]
         number, name = data.get("seal_no"), data.get("tsr_file")
-        seal_event = seal_events.get(number)
-        if not isinstance(name, str) or not TSR_PATH.match(name) or seal_event is None:
-            problems.append(f"seal {number}: the time stamp record in the ledger is not valid")
+        if (not _is_int(number) or not isinstance(name, str) or not TSR_PATH.match(name)
+                or name != f"seals/seal-{number:04d}.tsr"):
+            problems.append(f"seal {_label(number)}: the time stamp record in the ledger is not valid")
+            continue
+        if number in stamped:
+            problems.append(f"seal {number}: the ledger holds more than one time stamp for this seal")
+            continue
+        stamped.add(number)
+        seal_event = seals.get(number)
+        if seal_event is None:
+            problems.append(f"seal {number}: the time stamp is for a seal that is missing or failed its checks")
             continue
         path = root / name
         if not path.is_file():
             problems.append(f"seal {number}: time stamp file is missing")
             continue
-        raw = path.read_bytes()
+        raw = _read(path, f"seal {number} time stamp", problems)
+        if raw is None:
+            continue
         if sha256_hex(raw) != data.get("tsr_sha256"):
             problems.append(f"seal {number}: time stamp file was changed")
             continue
@@ -467,7 +542,7 @@ def _check_timestamps(root, entries, seal_events, problems, notes, summary, ca_f
         except ValueError as exc:
             problems.append(f"seal {number}: {exc}")
             continue
-        seal_hash = seal_event["data"].get("sha256")
+        seal_hash = seal_event["data"]["sha256"]
         if not info["granted"] or info["hash_oid"] != OID_SHA256 or info["imprint"] != seal_hash:
             problems.append(f"seal {number}: the time stamp is not for this seal file")
             continue
@@ -478,49 +553,71 @@ def _check_timestamps(root, entries, seal_events, problems, notes, summary, ca_f
         if not check_signature:
             notes.append(f"seal {number}: time stamp says {info['gen_time']}; its signature was not checked (skipped)")
             continue
-        seal_path = root / seal_event["data"]["file"]
-        status, detail = openssl_verify_timestamp(path, seal_path, info, ca_file, openssl)
+        status, detail = openssl_verify_timestamp(raw, seal_hash, info, ca_file, openssl)
         if status == "ok":
+            summary["timestamps_signature_ok"] += 1
             notes.append(f"seal {number}: time stamp {info['gen_time']} has a valid signature ({detail})")
         elif status == "failed":
             problems.append(f"seal {number}: time stamp signature check FAILED: {detail}")
         else:
-            notes.append(f"seal {number}: time stamp says {info['gen_time']}; its signature was not checked: {detail}")
+            unchecked.append(f"seal {number}: the signature of the time stamp could not be checked: {detail}")
 
 
 # ---------------------------------------------------------------- command line
+
+EXIT_CODES = {"ok": 0, "problems": 1, "incomplete": 3}
+RESULT_TEXT = {
+    "ok": "RESULT: OK",
+    "problems": "RESULT: PROBLEMS FOUND",
+    "incomplete": "RESULT: INCOMPLETE (no problem found, but a check that was asked for could not run)",
+}
+LIMIT_TEXT = (
+    "Limit: this check cannot tell if you have the newest copy of the case. An older copy, or a copy with "
+    "the last events, seals or time stamps removed, can still pass. Compare the ledger head or the last "
+    "seal hash with a value that you received by a separate, trusted route."
+)
+
 
 def _say(text: str) -> None:
     sys.stdout.write(text.encode("ascii", "backslashreplace").decode("ascii") + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="verify_case", description="Check a forensic-hand case folder.")
+    parser = argparse.ArgumentParser(
+        prog="verify_case", description="Check a forensic-hand case folder.",
+        epilog="Exit codes: 0 OK, 1 problems found, 3 incomplete (a requested check could not run).")
     parser.add_argument("case", help="the case folder")
     parser.add_argument("--ca-file", help="PEM file with the root certificates that you trust")
     parser.add_argument("--openssl", help="path to the OpenSSL program")
-    parser.add_argument("--skip-tsa-signature", action="store_true", help="do not run OpenSSL")
+    parser.add_argument("--skip-tsa-signature", action="store_true",
+                        help="do not check time stamp signatures (structure checks only)")
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     args = parser.parse_args(argv)
 
     outcome = verify_case(args.case, ca_file=args.ca_file, openssl=args.openssl,
                           check_tsa_signature=not args.skip_tsa_signature)
+    code = EXIT_CODES[outcome["status"]]
     if args.json:
         _say(json.dumps(outcome, indent=2, sort_keys=True))
-        return 0 if outcome["ok"] else 1
+        return code
     info = outcome["summary"]
     _say("forensic-hand case check")
     _say(f"Folder:         {args.case}")
     _say(f"Ledger:         {info['ledger_entries']} event(s), head {info['ledger_head']}")
-    _say(f"Evidence files: {info['evidence_files']} match the ledger")
-    _say(f"Seals:          {info['seals']} valid, {info['timestamps']} with a time stamp for the seal")
+    _say(f"Evidence files: {info['evidence_files']} item(s) match the ledger")
+    _say(f"Seals:          {info['seals']} valid; {info['timestamps']} time stamp(s) match their seal; "
+         f"{info['timestamps_signature_ok']} with a checked signature")
+    if info["last_seal"]:
+        _say(f"Last seal:      {info['last_seal']['seal_no']}, sha256 {info['last_seal']['sha256']}")
     for note in outcome["notes"]:
-        _say(f"NOTE:    {note}")
+        _say(f"NOTE:      {note}")
+    for item in outcome["unchecked"]:
+        _say(f"UNCHECKED: {item}")
     for problem in outcome["problems"]:
-        _say(f"PROBLEM: {problem}")
-    _say("RESULT: OK" if outcome["ok"] else "RESULT: PROBLEMS FOUND")
-    _say("Limit: events removed from the end of the ledger after the last seal cannot be seen.")
-    return 0 if outcome["ok"] else 1
+        _say(f"PROBLEM:   {problem}")
+    _say(RESULT_TEXT[outcome["status"]])
+    _say(LIMIT_TEXT)
+    return code
 
 
 if __name__ == "__main__":

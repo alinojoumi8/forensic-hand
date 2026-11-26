@@ -15,6 +15,23 @@ import pytest
 from pikepdf import Dictionary, Name
 from PIL import Image, ImageDraw, ImageFilter
 
+
+@pytest.fixture(autouse=True)
+def _no_real_signature_check_for_fake_tokens(request, monkeypatch):
+    """The fake time stamp tokens below have no real signature.
+
+    Outside network tests, the signature check at intake reports "could not run", the same as a
+    computer with no OpenSSL. A test that needs another answer patches seal._check_signature itself.
+    The stand-alone checker (verify_case) is never patched here.
+    """
+    if request.node.get_closest_marker("network"):
+        return
+    from forensic_hand import seal
+
+    monkeypatch.setattr(seal, "_check_signature",
+                        lambda *a, **k: ("unavailable", "test token: the signature is not checked in tests"))
+
+
 # ---------------------------------------------------------------- images
 
 def make_stroke_image(size=(1200, 800), blur=0.0, mode="L") -> Image.Image:
@@ -127,6 +144,23 @@ def scan_pdf(px=(850, 1100), extra_image=False, text=False, invisible=False, ann
     page.obj["/Contents"] = pdf.make_stream(content)
     pdf.docinfo["/Producer"] = "ScanTool 2"
     pdf.docinfo["/CreationDate"] = "D:20240101120000Z"
+    return _save_classic(pdf)
+
+
+def form_bomb_pdf(levels: int = 6, fanout: int = 10) -> bytes:
+    """A tiny PDF whose drawings reuse each other: fanout ** (levels + 1) image placements."""
+    pdf = pikepdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    img = pdf.make_stream(b"\x80" * 4, Type=Name.XObject, Subtype=Name.Image, Width=2, Height=2,
+                          ColorSpace=Name.DeviceGray, BitsPerComponent=8)
+    draw = b"".join(b"q 1 0 0 1 %d 0 cm /X Do Q\n" % i for i in range(fanout))
+    inner = pdf.make_stream(b"q 10 0 0 10 0 0 cm /X Do Q\n", Type=Name.XObject, Subtype=Name.Form,
+                            BBox=[0, 0, 612, 792], Resources=Dictionary(XObject=Dictionary(X=img)))
+    for _ in range(levels):
+        inner = pdf.make_stream(draw, Type=Name.XObject, Subtype=Name.Form, BBox=[0, 0, 612, 792],
+                                Resources=Dictionary(XObject=Dictionary(X=inner)))
+    page.obj["/Resources"] = Dictionary(XObject=Dictionary(X=inner))
+    page.obj["/Contents"] = pdf.make_stream(draw)
     return _save_classic(pdf)
 
 

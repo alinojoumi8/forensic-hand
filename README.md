@@ -9,6 +9,7 @@ It helps a human examiner. **It does not decide if a signature is genuine.**
 - **Seals the files.** It copies each file once, hashes it (SHA-256 and BLAKE2b), and sets the copy to read-only.
 - **Keeps a locked log.** Each step is one line in `ledger.log`. Each line holds the hash of the line before it. An edit breaks the chain.
 - **Gets a trusted time stamp** (only if you ask). A public time stamp authority signs the hash of the seal.
+  OpenSSL checks that signature before the stamp is recorded.
 - **Screens quality.** Resolution, blur, JPEG compression, number and dates of known samples.
 - **Screens PDF structure.** Saves after the first write, changes after a digital signature, pictures pasted on a scan, typed text on a scan, annotations, mismatched metadata.
 - **Writes a report.** One HTML file. It loads nothing from the internet.
@@ -61,11 +62,21 @@ python verify_case.py <unpacked folder>
 ```
 
 The checker tests the hash chain, each evidence file, each seal, and each time stamp.
-It uses OpenSSL to test the signature of the time stamp. Exit code 0 means OK. Exit code 1 means a problem.
+It uses OpenSSL to test the signature of the time stamp.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | OK |
+| 1 | Problems found |
+| 3 | Incomplete: no problem found, but a check could not run (for example, no OpenSSL) |
+
+Use `--skip-tsa-signature` to check the structure only, with no OpenSSL.
 
 ## Limits you must know
 
-- The log cannot show events that someone removed from the **end** after the last seal. Seal often.
+- The checker cannot tell if you have the **newest** copy. An older copy, or a copy with the last events,
+  seals or time stamps removed, can still pass. Send the last seal hash by a separate route
+  (for example, in the covering letter), so that the other side can compare it.
 - A seal with no time stamp only has the clock of this computer. That clock can be wrong.
 - Dates and program names inside a PDF are plain text. Anyone can edit them. A note is a lead, not proof.
 - The tool does not test if a digital signature inside a PDF is valid.

@@ -136,6 +136,7 @@ def test_a_time_stamp_is_recorded_and_checked(case, monkeypatch):
     assert result["ok"] is True
     assert result["summary"]["timestamps"] == 1
     assert any("signature" in n.lower() and "not checked" in n.lower() for n in result["notes"])
+    assert stamp["signature_check"] == "not checked" and stamp["recovered_from_earlier_run"] is False
 
 
 def test_the_time_stamp_request_carries_the_hash_of_the_seal_file(case, monkeypatch):
@@ -193,36 +194,65 @@ def test_a_time_stamp_with_no_real_signature_fails_the_signature_check(case, mon
     assert any("signature check FAILED" in p and "OpenSSL" in p for p in result["problems"])
 
 
-def test_a_broken_openssl_setup_is_a_note_and_not_a_false_alarm(case, monkeypatch):
-    """Found on a real computer: an OpenSSL whose configuration file is missing must not report a bad time stamp."""
+def test_a_broken_openssl_setup_makes_the_result_incomplete_not_a_false_alarm(case, monkeypatch):
+    """Found on a real computer: an OpenSSL whose configuration file is missing must not report a bad time stamp.
+
+    CodeRabbit: it must not report OK either. The status is "incomplete".
+    """
     create_seal(case)
     _fake_tsa(monkeypatch)
     timestamp_seal(case, url="http://tsa.invalid/tsr")
     # The Python program stands in for an OpenSSL that stops before it runs the check.
     result = vc.verify_case(case.path, check_tsa_signature=True, openssl=sys.executable)
-    assert result["ok"] is True
-    assert any("could not run the check" in n for n in result["notes"])
+    assert result["status"] == "incomplete" and result["ok"] is False and result["problems"] == []
+    assert any("could not run the check" in u for u in result["unchecked"])
+    assert result["summary"]["timestamps"] == 1 and result["summary"]["timestamps_signature_ok"] == 0
 
 
 def test_the_signature_check_does_not_use_the_system_openssl_configuration(case, monkeypatch):
     if vc.find_openssl() is None:
         pytest.skip("OpenSSL is not installed")
-    create_seal(case)
+    seal = create_seal(case)
     _fake_tsa(monkeypatch)
     stamp = timestamp_seal(case, url="http://tsa.invalid/tsr")
     monkeypatch.setenv("OPENSSL_CONF", str(case.path / "no-such-file.cnf"))
-    info = vc.parse_timestamp_response((case.path / stamp["tsr_file"]).read_bytes())
-    status, detail = vc.openssl_verify_timestamp(case.path / stamp["tsr_file"], case.path / "seals" / "seal-0001.json", info)
+    raw = (case.path / stamp["tsr_file"]).read_bytes()
+    status, detail = vc.openssl_verify_timestamp(raw, seal["sha256"], vc.parse_timestamp_response(raw))
     assert status == "failed" and "could not run" not in detail
 
 
-def test_a_missing_openssl_is_a_note(case, monkeypatch):
+def test_openssl_checks_the_given_bytes_and_digest_not_the_files(case, monkeypatch):
+    """CodeRabbit: OpenSSL must check the same bytes that Python checked, not reopen the files."""
+    seal = create_seal(case)
+    _fake_tsa(monkeypatch)
+    stamp = timestamp_seal(case, url="http://tsa.invalid/tsr")
+    raw = (case.path / stamp["tsr_file"]).read_bytes()
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.setdefault("cmds", []).append(cmd)
+
+        class Done:
+            returncode, stdout, stderr = 0, "OpenSSL 3.9.9 test\nVerification: OK", ""
+        return Done()
+    monkeypatch.setattr(vc.subprocess, "run", fake_run)
+    status, _ = vc.openssl_verify_timestamp(raw, seal["sha256"], vc.parse_timestamp_response(raw), openssl=sys.executable)
+    cmd = seen["cmds"][-1]
+    assert status == "ok"
+    assert cmd[cmd.index("-digest") + 1] == seal["sha256"]
+    assert "-data" not in cmd
+    assert str(case.path) not in " ".join(cmd)
+    assert vc.openssl_verify_timestamp(raw, "not-a-digest", {})[0] == "failed"
+
+
+def test_a_missing_openssl_makes_the_result_incomplete(case, monkeypatch):
     create_seal(case)
     _fake_tsa(monkeypatch)
     timestamp_seal(case, url="http://tsa.invalid/tsr")
     result = vc.verify_case(case.path, check_tsa_signature=True, openssl=str(case.path / "no-openssl.exe"))
-    assert result["ok"] is True
-    assert any("OpenSSL was not found" in n for n in result["notes"])
+    assert result["status"] == "incomplete" and result["ok"] is False
+    assert any("OpenSSL was not found" in u for u in result["unchecked"])
+    assert vc.main([str(case.path), "--openssl", str(case.path / "no-openssl.exe")]) == 3
 
 
 @pytest.mark.network
@@ -231,7 +261,9 @@ def test_a_real_time_stamp_passes_the_openssl_signature_check(case):
     if vc.find_openssl() is None:
         pytest.skip("OpenSSL is not installed")
     create_seal(case)
-    timestamp_seal(case)
+    stamp = timestamp_seal(case)
+    assert stamp["signature_check"] == "ok", stamp["signature_detail"]
     result = vc.verify_case(case.path, check_tsa_signature=True)
     assert result["ok"] is True, result["problems"]
+    assert result["summary"]["timestamps_signature_ok"] == 1
     assert any("valid signature" in n for n in result["notes"])

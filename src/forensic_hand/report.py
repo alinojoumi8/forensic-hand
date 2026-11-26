@@ -162,7 +162,9 @@ def build_report(case) -> tuple[str, dict]:
                 ("Made (clock of this computer)", seal["created"])]
         if stamp:
             rows += [("Trusted time stamp", stamp["gen_time"]), ("Time stamp authority", stamp["tsa_url"]),
-                     ("Serial number", stamp["serial"]), ("Token file", stamp["tsr_file"])]
+                     ("Serial number", stamp["serial"]), ("Token file", stamp["tsr_file"]),
+                     ("Signature of the time stamp, at intake",
+                      f"{stamp.get('signature_check', 'not checked')}: {stamp.get('signature_detail', '')}")]
         add(_facts_table(rows))
         if not stamp:
             add('<p><span class="tag notice">Note</span> No trusted time stamp. All times for this seal come from the '

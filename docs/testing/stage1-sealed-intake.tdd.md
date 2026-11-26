@@ -76,3 +76,28 @@ These runs used other programs:
 - Tested on Windows 11 with Python 3.14 only.
 - Not covered by tests: about 11% of the lines, mostly error paths for broken PDF objects and rare OpenSSL failures.
 - PDF: no visual comparison of the earlier versions inside a file yet. No test of the validity of a digital signature.
+
+## CodeRabbit review 1 (2026-11-26)
+
+Command: `coderabbit review --base main --committed --agent` (CodeRabbit CLI 0.9.7). 12 findings, all major.
+All 12 were checked against the code and were real. All 12 are fixed. Tests: `tests/test_review_fixes.py`.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | Reused PDF drawings can expand to millions of placements | Shared work limit per file; `PDF-SCREEN-INCOMPLETE` warning |
+| 2 | Checker checked only the first record of a shared file | Each record is compared with the file |
+| 3 | Bad field types in the ledger crashed the checker | Fields are validated; any unexpected error is a problem (fail closed) |
+| 4 | Checker did not say that an older copy can still pass | Stated in the output, the docstring and the README; last seal hash is printed |
+| 5 | A failed seal append left a file that blocked the next seal | New file removed when the event is surely not written; a matching left-over file is taken over; a non-matching one is refused |
+| 6 | Missing OpenSSL gave `OK` and exit code 0 | New status `incomplete`, exit code 3 |
+| 7 | A stored file could stay writable | Read-only before it gets its final name; repaired on reuse |
+| 8 | A failed time stamp append blocked a retry | Same handling as 5; a left-over token for this seal is taken over with no new request |
+| 9 | The time stamp signature was not checked before it was recorded | OpenSSL checks it first; a bad signature is refused; "not checked" is recorded as such |
+| 10 | OpenSSL reopened the files that Python had checked | OpenSSL gets a private copy of the response and the checked digest |
+| 11 | A duplicate seal number hid the first seal | Duplicates are problems |
+| 12 | An unreadable file crashed the checker | It is a problem that names the file |
+
+Own fault found by the new tests: a time stamp file taken over from a stopped run was not set to read-only. Fixed.
+
+Result after the fixes: 163 passed, 2 network tests passed (real DigiCert stamp, checked by OpenSSL at intake and in
+the checker), coverage 91%, ruff clean. Stress test: 21,200 broken time stamp, PDF and image inputs, 0 crashes.

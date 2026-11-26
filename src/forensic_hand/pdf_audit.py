@@ -24,6 +24,11 @@ MAX_IMAGES = 400
 MAX_REVISIONS = 20
 MAX_DECODED_IMAGES = 20
 MAX_FORM_DEPTH = 6
+# Work limits for one file, all pages together. A small PDF can reuse drawings (Form XObjects)
+# so that they expand to millions of placements. These limits stop that and report it.
+MAX_OPERATORS = 1_000_000
+MAX_FORM_PLACEMENTS = 5_000
+MAX_PAGE_IMAGE_RECORDS = 1_000
 IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 
 _SECTION_END = re.compile(rb"startxref\s+(\d+)\s+%%EOF")
@@ -228,17 +233,47 @@ def _signatures(pdf, size: int) -> list[dict]:
 
 # ---------------------------------------------------------------- page content
 
-class _PageScan:
+class _Budget:
+    """Work left for one file. Shared by every page and every nested drawing."""
+
     def __init__(self) -> None:
+        self.operators = MAX_OPERATORS
+        self.forms = MAX_FORM_PLACEMENTS
+        self.exhausted = False
+        self.stopped_on_page: int | None = None
+
+
+class _BudgetExhausted(Exception):
+    pass
+
+
+class _PageScan:
+    def __init__(self, budget: _Budget) -> None:
+        self.budget = budget
         self.images: list[dict] = []
+        self.images_not_kept = 0
         self.visible_text = 0
         self.invisible_text = 0
+
+    def spend(self, kind: str) -> None:
+        left = getattr(self.budget, kind) - 1
+        setattr(self.budget, kind, left)
+        if left < 0:
+            self.budget.exhausted = True
+            raise _BudgetExhausted
+
+    def add_image(self, record: dict) -> None:
+        if len(self.images) < MAX_PAGE_IMAGE_RECORDS:
+            self.images.append(record)
+        else:
+            self.images_not_kept += 1
 
 
 def _walk(target, resources, ctm, scan: _PageScan, depth: int) -> None:
     stack, render_mode = [], 0
     xobjects = resources.get("/XObject") if resources is not None else None
     for item in pikepdf.parse_content_stream(target):
+        scan.spend("operators")
         operator = str(item.operator)
         operands = item.operands
         if operator == "q":
@@ -260,7 +295,7 @@ def _walk(target, resources, ctm, scan: _PageScan, depth: int) -> None:
                 scan.visible_text += count
         elif operator == "INLINE IMAGE":
             image = getattr(item, "iimage", None)
-            scan.images.append(_image_record(getattr(image, "width", 0), getattr(image, "height", 0), ctm, "inline", None))
+            scan.add_image(_image_record(getattr(image, "width", 0), getattr(image, "height", 0), ctm, "inline", None))
         elif operator == "Do" and operands and xobjects is not None:
             xobj = xobjects.get(operands[0])
             if xobj is None:
@@ -270,8 +305,9 @@ def _walk(target, resources, ctm, scan: _PageScan, depth: int) -> None:
                 record = _image_record(int(xobj.get("/Width", 0)), int(xobj.get("/Height", 0)), ctm,
                                        _name(xobj.get("/Filter", "")) or "none", xobj)
                 record["stencil_mask"] = bool(xobj.get("/ImageMask", False))
-                scan.images.append(record)
+                scan.add_image(record)
             elif subtype == "Form" and depth < MAX_FORM_DEPTH:
+                scan.spend("forms")
                 matrix = xobj.get("/Matrix")
                 inner = _mul(tuple(float(v) for v in matrix), ctm) if matrix is not None and len(matrix) == 6 else ctm
                 _walk(xobj, xobj.get("/Resources", resources), inner, scan, depth + 1)
@@ -291,13 +327,16 @@ def _image_record(width: int, height: int, ctm, filter_name: str, xobj) -> dict:
     return record
 
 
-def _scan_page(page_obj, number: int, cfg: dict) -> tuple[dict, list[dict]]:
+def _scan_page(page_obj, number: int, cfg: dict, budget: _Budget) -> tuple[dict, list[dict]]:
     box = _inherited(page_obj, "/MediaBox")
     unit = float(page_obj.get("/UserUnit", 1))
     x0, y0, x1, y1 = (float(v) for v in box)
     page_w, page_h = abs(x1 - x0) * unit, abs(y1 - y0) * unit
-    scan = _PageScan()
-    _walk(pikepdf.Page(page_obj), _inherited(page_obj, "/Resources"), IDENTITY, scan, 0)
+    scan = _PageScan(budget)
+    try:
+        _walk(pikepdf.Page(page_obj), _inherited(page_obj, "/Resources"), IDENTITY, scan, 0)
+    except _BudgetExhausted:
+        budget.stopped_on_page = number   # keep what was read so far
     area = max(page_w * page_h, 1.0)
     for image in scan.images:
         image["page"] = number
@@ -310,7 +349,8 @@ def _scan_page(page_obj, number: int, cfg: dict) -> tuple[dict, list[dict]]:
             subtype = "unknown"
         if subtype not in ("Link", "Popup"):
             annots[subtype] = annots.get(subtype, 0) + 1
-    facts = {"page": number, "width_pt": _r(page_w), "height_pt": _r(page_h), "images": len(scan.images),
+    facts = {"page": number, "width_pt": _r(page_w), "height_pt": _r(page_h),
+             "images": len(scan.images) + scan.images_not_kept,
              "visible_text_bytes": scan.visible_text, "invisible_text_bytes": scan.invisible_text,
              "annotations": annots}
     return facts, scan.images
@@ -439,14 +479,17 @@ def _page_findings(pdf, facts: dict, cfg: dict) -> list[dict]:
     low_dpi, mid_dpi, ocr_pages, failed, decoded = [], [], [], [], 0
     annot_types: dict[str, int] = {}
     annot_pages: list[int] = []
+    budget = _Budget()
 
     for number, page in enumerate(pdf.pages, start=1):
+        if budget.exhausted:
+            break
         if number > MAX_PAGES:
             out.append(finding("PDF-PAGE-LIMIT", "notice", f"Only the first {MAX_PAGES} pages were checked.",
                                limits="The rest of the file is stored and hashed, but not screened."))
             break
         try:
-            page_facts, images = _scan_page(page.obj, number, cfg)
+            page_facts, images = _scan_page(page.obj, number, cfg, budget)
         except Exception:  # noqa: BLE001 - one bad page must not stop the audit
             failed.append(number)
             continue
@@ -516,6 +559,14 @@ def _page_findings(pdf, facts: dict, cfg: dict) -> list[dict]:
                            limits="Comments, form fields and signature boxes are annotations. They are separate from the page "
                                   "content and can be added or removed at any time.",
                            by_type=annot_types, pages=annot_pages[:50]))
+    if budget.exhausted:
+        out.append(finding(
+            "PDF-SCREEN-INCOMPLETE", "warning", "The page content is too complex. Screening of this file is not complete.",
+            detail=f"Screening stopped on page {budget.stopped_on_page} of {facts['pages']}. "
+                   "Notes for that page and the pages after it can be missing.",
+            limits="Very complex drawings, or drawings that repeat themselves many times, cause this. "
+                   "It does not show what the content is or who made it.",
+            stopped_on_page=budget.stopped_on_page, operator_limit=MAX_OPERATORS, form_limit=MAX_FORM_PLACEMENTS))
     if failed:
         out.append(finding("PDF-PAGE-ERROR", "notice", "The content of some pages could not be read.",
                            detail=f"Pages: {', '.join(str(n) for n in failed[:30])}.",
