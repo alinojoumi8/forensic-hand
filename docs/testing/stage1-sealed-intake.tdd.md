@@ -182,3 +182,7 @@ Own faults found by the new tests:
 3. Compare panes spilled over the right panel in a narrow window (long titles). Titles now shrink.
 
 Result: 259 passed (including the 2 network tests), ruff clean, JavaScript syntax clean, browser check passed.
+
+## CodeRabbit review 6 (2026-11-26)
+
+Command: `coderabbit review --committed --base-commit 547bbc8 --agent` (the review-5 fixes only). 0 findings.
