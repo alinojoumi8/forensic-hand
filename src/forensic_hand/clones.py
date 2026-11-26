@@ -7,7 +7,7 @@ They also fit two scans or copies of the same piece of paper. This is a screen, 
 Method (fixed rules, no model):
 1. Ink: pixels darker than an Otsu threshold. Darkness is kept, not only black and white.
 2. Cut to the ink, and resize so that the spread of the ink is a fixed size; blur a little.
-3. For each small turn: find the best shift by phase correlation, then score the match by
+3. For each small turn: find the best shift by cross-correlation, then score the match by
    Pearson correlation. The best score over the turns is the result.
 """
 
@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import numpy as np
 from PIL import Image
+
+from .imaging import on_white
 
 
 def otsu_threshold(gray: np.ndarray) -> float:
@@ -84,14 +86,24 @@ def remove_ruling_lines(ink: np.ndarray, share: float) -> np.ndarray:
     return ink & ~lines
 
 
-def _trimmed_span(weights: np.ndarray, trim: float) -> tuple[int, int]:
-    """First and last index that hold the middle (1 - 2 * trim) of the ink mass."""
-    total = np.cumsum(weights)
-    if total[-1] <= 0:
-        return 0, len(weights)
-    low = int(np.searchsorted(total, trim * total[-1]))
-    high = int(np.searchsorted(total, (1 - trim) * total[-1])) + 1
-    return low, max(high, low + 1)
+def _drop_far_ink(weight: np.ndarray, share: float) -> np.ndarray:
+    """Drop the `share` of ink mass that lies farthest from the centre of the ink.
+
+    Small stray marks at the far ends (bits of a line, a dot) then do not change the size or
+    the proportions. The cut is round, not along the page axes, so it stays the same when the
+    ink is turned.
+    """
+    mass = weight.sum()
+    if mass <= 0:
+        return weight
+    yy, xx = np.mgrid[0:weight.shape[0], 0:weight.shape[1]]
+    cy, cx = (weight * yy).sum() / mass, (weight * xx).sum() / mass
+    dist = np.hypot(yy - cy, xx - cx)
+    inked = weight > 0
+    order = np.argsort(dist[inked])
+    cumulative = np.cumsum(weight[inked][order])
+    cut = dist[inked][order][min(int(np.searchsorted(cumulative, (1 - share) * mass)), order.size - 1)]
+    return np.where(dist <= cut, weight, 0.0)
 
 
 def prepare(img: Image.Image, radius_px: float, min_ink: float, blur_sigma: float = 1.5,
@@ -102,7 +114,7 @@ def prepare(img: Image.Image, radius_px: float, min_ink: float, blur_sigma: floa
     radius of gyration), not by the edges of the ink: noise moves an edge, but it barely moves
     the spread of all the ink.
     """
-    gray = np.asarray(img.convert("L"), dtype=np.float32)
+    gray = np.asarray(on_white(img).convert("L"), dtype=np.float32)
     threshold = otsu_threshold(gray)
     ink = remove_ruling_lines(gray < threshold, line_share)
     fraction = float(ink.mean())
@@ -110,24 +122,27 @@ def prepare(img: Image.Image, radius_px: float, min_ink: float, blur_sigma: floa
         return None
     # Darkness of the ink only; removed lines carry no weight.
     weight = np.clip((threshold - gray) / max(threshold, 1.0), 0, 1).astype(np.float64) * ink
-    # Cut to the middle 96% of the ink mass in each direction, so that small stray marks at the
-    # far ends (bits of a line, a dot) do not change the size or the proportions.
-    top, bottom = _trimmed_span(weight.sum(axis=1), 0.02)
-    left, right = _trimmed_span(weight.sum(axis=0), 0.02)
-    dark = weight[top:bottom, left:right]
-    mass = dark.sum()
-    if mass <= 0:
+    weight = _drop_far_ink(weight, 0.02)
+    rows, cols = np.nonzero(weight)
+    if rows.size == 0:
         return None
+    dark = weight[rows.min():rows.max() + 1, cols.min():cols.max() + 1]
+    mass = dark.sum()
     yy, xx = np.mgrid[0:dark.shape[0], 0:dark.shape[1]]
     cy, cx = (dark * yy).sum() / mass, (dark * xx).sum() / mass
-    radius = float(np.sqrt((dark * ((yy - cy) ** 2 + (xx - cx) ** 2)).sum() / mass))
+    var_y = float((dark * (yy - cy) ** 2).sum() / mass)
+    var_x = float((dark * (xx - cx) ** 2).sum() / mass)
+    cov = float((dark * (xx - cx) * (yy - cy)).sum() / mass)
+    radius = float(np.sqrt(var_x + var_y))
     if radius < 2:
         return None
+    # Elongation from the principal axes of the ink: the same when the ink is turned.
+    half_trace, spread = (var_x + var_y) / 2, np.sqrt(max(((var_x - var_y) / 2) ** 2 + cov ** 2, 0.0))
+    elongation = float(np.sqrt((half_trace + spread) / max(half_trace - spread, 1e-9)))
     factor = radius_px / radius
     size = (max(8, round(dark.shape[1] * factor)), max(8, round(dark.shape[0] * factor)))
     resized = Image.fromarray(dark.astype(np.float32), mode="F").resize(size, Image.BILINEAR)
-    return {"ink": _blur(np.asarray(resized, dtype=np.float64), blur_sigma),
-            "aspect": (right - left) / (bottom - top)}
+    return {"ink": _blur(np.asarray(resized, dtype=np.float64), blur_sigma), "elongation": elongation}
 
 
 def _place(arr: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
@@ -140,11 +155,14 @@ def _place(arr: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
     return out
 
 
-def _phase_shift(a: np.ndarray, b: np.ndarray) -> tuple[int, int]:
-    fa, fb = np.fft.fft2(a), np.fft.fft2(b)
-    cross = fa * np.conj(fb)
-    cross /= np.abs(cross) + 1e-9
-    peak = np.fft.ifft2(cross).real
+def _best_shift(a: np.ndarray, b: np.ndarray) -> tuple[int, int]:
+    """Shift of b that best matches a, by plain cross-correlation (computed with FFT).
+
+    Phase-only correlation was tried first: it locks onto wrong shifts when thin pen lines are
+    turned even one degree, so it is not used.
+    """
+    fa, fb = np.fft.rfft2(a - a.mean()), np.fft.rfft2(b - b.mean())
+    peak = np.fft.irfft2(fa * np.conj(fb), s=a.shape)
     dy, dx = np.unravel_index(int(np.argmax(peak)), peak.shape)
     H, W = a.shape
     return (dy - H if dy > H // 2 else dy), (dx - W if dx > W // 2 else dx)
@@ -159,7 +177,9 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
 
 def compare(prep_a: dict, prep_b: dict, rotations, max_aspect_diff: float) -> dict:
     """Best match of b onto a. Score 1.0 means the same ink, point for point."""
-    if abs(prep_a["aspect"] / prep_b["aspect"] - 1) > max_aspect_diff:
+    # Symmetric (the order of the crops does not matter) and rotation-safe (principal axes).
+    low, high = sorted((prep_a["elongation"], prep_b["elongation"]))
+    if high / low - 1 > max_aspect_diff:
         return {"score": None, "reason": "the shapes have different proportions"}
     a, b = prep_a["ink"], prep_b["ink"]
     pad = max(a.shape[0], b.shape[0]) // 4
@@ -171,7 +191,7 @@ def compare(prep_a: dict, prep_b: dict, rotations, max_aspect_diff: float) -> di
             Image.fromarray(b.astype(np.float32), mode="F").rotate(degrees, resample=Image.BILINEAR, expand=True),
             dtype=np.float64)
         moving = _place(turned, shape)
-        dy, dx = _phase_shift(base, moving)
+        dy, dx = _best_shift(base, moving)
         score = _pearson(base, np.roll(moving, (dy, dx), axis=(0, 1)))
         if score > best["score"]:
             best = {"score": score, "rotation_deg": degrees, "shift_px": [int(dx), int(dy)]}

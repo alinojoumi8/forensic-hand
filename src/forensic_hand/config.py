@@ -33,8 +33,9 @@ DEFAULTS = {
 
     # Copy check (digital cut and paste). Screening values, to be validated.
     # Ink is scaled so that its spread (radius of gyration) is this many pixels, then blurred a little.
-    # Long straight lines and the outer 2% of ink mass are ignored. Tuned on synthetic lines only:
-    # copies (resized, JPEG, pasted on a printed line) scored 0.95 or more, natural variation 0.83 or less.
+    # Long straight lines and the 2% of ink farthest from the centre are ignored. Tuned on synthetic
+    # lines only: copies (resized, turned up to 3 degrees, JPEG, pasted on a printed line) scored
+    # 0.975 or more; natural variation 0.79 or less (0.91 for an unusually steady hand).
     "clone_radius_px": 160,
     "clone_blur_px": 1.5,
     "clone_rotations_deg": [-3, -2, -1, 0, 1, 2, 3],

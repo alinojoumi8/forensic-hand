@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 from PIL import __version__ as PILLOW_VERSION
 
 from . import __version__
+from .imaging import on_white
 
 MAX_SCALE_DPI = 600
 MAX_PANEL_SIDE = 2400
@@ -68,15 +69,27 @@ def common_scale(crops: list[dict]) -> int | None:
     return max(scale, 1)
 
 
+def unscaled_height(crops: list[dict]) -> int:
+    """Common panel height when the scale is not known, kept so that no panel is wider than the limit."""
+    height = min(600, max(c["height"] for c in crops))
+    widest = max(c["width"] * height / c["height"] for c in crops)
+    if widest > MAX_PANEL_SIDE:
+        height = math.floor(height * MAX_PANEL_SIDE / widest)
+    return max(1, height)
+
+
 def _panel_size(crop: dict, scale: int | None, height: int) -> tuple[int, int]:
     if scale:
         return (max(1, round(crop["width"] * scale / crop["dpi"][0])),
                 max(1, round(crop["height"] * scale / crop["dpi"][1])))
-    return max(1, round(crop["width"] * height / crop["height"])), height
+    width = round(crop["width"] * height / crop["height"])
+    if width > MAX_PANEL_SIDE:   # a very long, thin crop: keep its shape and cap the width
+        return MAX_PANEL_SIDE, max(1, round(crop["height"] * MAX_PANEL_SIDE / crop["width"]))
+    return max(1, width), height
 
 
 def _resized(img: Image.Image, size: tuple[int, int]) -> Image.Image:
-    img = img.convert("RGB")
+    img = on_white(img)
     return img if img.size == size else img.resize(size, Image.LANCZOS)
 
 
@@ -89,9 +102,12 @@ def _header(draw, width, title, subtitle) -> int:
     return y + 40
 
 
-def _footer_lines(to_scale: bool, scale: int | None, case_id: str, extra: list[str]) -> list[str]:
+def _footer_lines(to_scale: bool, scale: int | None, case_id: str, extra: list[str],
+                  scale_line: str | None = None) -> list[str]:
     lines = []
-    if to_scale:
+    if scale_line:
+        lines.append(scale_line)
+    elif to_scale:
         lines.append(f"All panels are shown at the same scale: {scale} pixels per inch. Where a panel had to be "
                      "resized, Lanczos resampling was used. No contrast, colour or sharpness change was made.")
     else:
@@ -116,7 +132,7 @@ def draw_panels(title: str, subtitle: str, items: list[dict], case_id: str) -> t
     """items: [{"crop": record, "image": PIL image, "label": str, "source": evidence record}]"""
     crops = [it["crop"] for it in items]
     scale = common_scale(crops)
-    height = min(600, max(c["height"] for c in crops)) if scale is None else 0
+    height = unscaled_height(crops) if scale is None else 0
     sizes = [_panel_size(c, scale, height) for c in crops]
     cols = len(items) if len(items) <= 3 else (2 if len(items) == 4 else 3)
     rows = math.ceil(len(items) / cols)
@@ -163,14 +179,17 @@ def draw_panels(title: str, subtitle: str, items: list[dict], case_id: str) -> t
 
 
 def _darkness(img: Image.Image) -> np.ndarray:
-    return 1.0 - np.asarray(img.convert("L"), dtype=np.float64) / 255.0
+    return 1.0 - np.asarray(on_white(img).convert("L"), dtype=np.float64) / 255.0
 
 
 def draw_overlay(title: str, subtitle: str, a: dict, b: dict, params: dict, case_id: str) -> tuple[bytes, dict]:
     """a and b: {"crop", "image", "label", "source"}. b is moved, turned and scaled onto a."""
     crops = [a["crop"], b["crop"]]
     scale = common_scale(crops)
-    height = min(600, max(c["height"] for c in crops)) if scale is None else 0
+    height = unscaled_height(crops) if scale is None else 0
+    # A hand resize of blue breaks the shared scale: say so, and do not claim it.
+    resized_by_hand = params["scale"] != 1
+    same_scale = scale is not None and not resized_by_hand
     size_a = _panel_size(a["crop"], scale, height)
     size_b = _panel_size(b["crop"], scale, height)
     img_a = _resized(a["image"], size_a)
@@ -194,8 +213,13 @@ def draw_overlay(title: str, subtitle: str, a: dict, b: dict, params: dict, case
               f"Blue: {b['crop']['crop_id']} from {b['source']['id']} ({b['source']['name']}) - {b['label']}",
               (f"Blue was moved {params['dx']}, {params['dy']} px, turned {params['rotation']} degrees and scaled "
                f"{params['scale']} times. The examiner set this alignment by hand. Dark purple shows where both inks lie.")]
+    scale_line = None
+    if scale is not None and resized_by_hand:
+        scale_line = (f"Red is shown at {scale} pixels per inch. Blue was resized by hand ({params['scale']} times) "
+                      "to align it, so blue is NOT at the same scale as red. No contrast, colour or sharpness "
+                      "change was made.")
     footer = []
-    for line in _footer_lines(scale is not None, scale, case_id, legend):
+    for line in _footer_lines(same_scale, scale, case_id, legend, scale_line):
         footer += _wrap(probe, line, _font(14), width - 2 * MARGIN)
     title_lines = len(_wrap(probe, title, _font(30), width - 2 * MARGIN))
     top = MARGIN + 38 * title_lines + 40
@@ -205,11 +229,14 @@ def draw_overlay(title: str, subtitle: str, a: dict, b: dict, params: dict, case
     y0 = _header(draw, width, title, subtitle)
     if scale is None:
         draw.text((width - MARGIN - 220, MARGIN), "NOT TO SCALE", font=_font(26), fill=WARN)
+    elif resized_by_hand:
+        draw.text((width - MARGIN - 260, MARGIN), "BLUE RESIZED", font=_font(26), fill=WARN)
     img.paste(panel, (MARGIN, y0))
     draw.rectangle([MARGIN - 1, y0 - 1, MARGIN + cw, y0 + ch], outline=LINE)
     fy = y0 + ch + 24
     if scale:
         fy = _scale_bar(draw, MARGIN, fy, scale) + 10
     _text_block(draw, (MARGIN, fy), footer, _font(14), MUTED, 6)
-    return _png(img), {"to_scale": scale is not None, "scale_dpi": scale, "panel_sizes": [list(size_a), list(size_b)],
+    return _png(img), {"to_scale": same_scale, "scale_dpi": scale, "blue_resized_by_hand": resized_by_hand,
+                       "panel_sizes": [list(size_a), list(size_b)],
                        "width": img.width, "height": img.height, "pillow": PILLOW_VERSION}

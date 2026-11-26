@@ -144,9 +144,10 @@ textarea { width: 100%; resize: vertical; min-height: 64px; }
 .hint { position: absolute; inset: auto 0 16px 0; margin: 0; text-align: center; color: var(--muted); pointer-events: none; }
 .hint.center { position: static; padding: 40px; }
 .panes { display: grid; gap: 1px; background: var(--line); min-height: 0; grid-auto-rows: minmax(0, 1fr); }
-.pane { display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--canvas); min-height: 0; }
-.pane header { padding: 5px 10px; background: var(--panel-2); font-size: 12px; display: flex; gap: 10px; align-items: baseline; }
-.pane header .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane { display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr);
+  background: var(--canvas); min-height: 0; min-width: 0; overflow: hidden; }
+.pane header { padding: 5px 10px; background: var(--panel-2); font-size: 12px; display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.pane header .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border-radius: 12px; background: var(--raise); font-size: 12px; }
 .chip button { border: 0; background: none; cursor: pointer; color: var(--muted); padding: 0 4px; }
 .legend-a { color: #ff7b6b; font-weight: 600; }

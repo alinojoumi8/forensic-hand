@@ -15,6 +15,7 @@ from PIL import Image
 
 from . import TOOL_NAME, __version__
 from .findings import count_levels
+from .imaging import on_white
 from .ledger import utc_now
 
 LIMITS = [
@@ -126,7 +127,7 @@ def _thumb(case, record: dict, box=(220, 140)) -> str:
     """A small picture of a crop for the report, as a data address (no file, no network)."""
     try:
         with Image.open(case.path / record["file"]) as img:
-            img = img.convert("RGB")
+            img = on_white(img)
             img.thumbnail(box, Image.LANCZOS)
             buf = io.BytesIO()
             img.save(buf, "PNG")
@@ -347,6 +348,13 @@ def build_report(case) -> tuple[str, dict]:
 
 
 def write_report(case) -> Path:
+    # Hold the case lock while reading the state and writing both files, so that two writers
+    # (the CLI and the workbench, or two clicks) can never mix two states in one report.
+    with case.ledger.lock():
+        return _write_report(case)
+
+
+def _write_report(case) -> Path:
     html, data = build_report(case)
     folder = case.path / "reports"
     folder.mkdir(exist_ok=True)

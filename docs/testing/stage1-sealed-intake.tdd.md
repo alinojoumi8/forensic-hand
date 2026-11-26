@@ -158,3 +158,27 @@ Faults that only the browser test found, all fixed with a test where the code al
 
 Copy-check values (synthetic data only, not validated): copies 0.955 to 1.0; natural variation 0.83 or less;
 different signatures about 0.3. Warning from 0.95, note from 0.90.
+
+## CodeRabbit review 5 (Stage 2 and the last Stage 1 fix, 2026-11-26)
+
+Command: `coderabbit review --committed --base-commit cc0764d --agent`. 11 findings, all real, all fixed.
+Tests: `tests/test_review_stage2.py`.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1-2 | The copy-check shape gate depended on crop order and rejected copies turned a few degrees | Symmetric gate on elongation from the principal axes of the ink (the same when the ink is turned) |
+| 3, 4, 6 | Transparent PNGs turned black in previews, charts and report thumbnails | One helper puts transparent parts on white paper; also used by the copy check and the overlay screen |
+| 5 | Two report requests could mix two states | The report is built and written under the case lock |
+| 7, 11 | A thin crop or a tall picture could make a huge chart or preview | Panel width capped at 2,400 px; previews capped at 8,000 px per side and 40 million pixels |
+| 8 | An overlay with blue resized by hand still claimed one scale | It says BLUE RESIZED and states that blue is not at the same scale; `to_scale` is false |
+| 9-10 | Two races in the screen (double compare panes, blank page) | A build counter, and a page check after the picture loads |
+
+Own faults found by the new tests:
+
+1. Phase-only correlation locked onto wrong shifts when thin lines were turned 1 degree. Replaced by plain
+   cross-correlation.
+2. The 2% trim along the page axes changed with rotation. Replaced by a round cut: the 2% of ink farthest
+   from the centre. Copies turned up to 3 degrees now score 0.975 to 0.987.
+3. Compare panes spilled over the right panel in a narrow window (long titles). Titles now shrink.
+
+Result: 259 passed (including the 2 network tests), ruff clean, JavaScript syntax clean, browser check passed.

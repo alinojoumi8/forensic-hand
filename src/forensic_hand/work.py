@@ -186,8 +186,8 @@ def _clone_settings(cfg: dict) -> dict:
             "rotations_deg": cfg["clone_rotations_deg"],
             "notice_at": cfg["clone_notice_at"], "warning_at": cfg["clone_warning_at"],
             "max_aspect_diff": cfg["clone_max_aspect_diff"], "min_ink_fraction": cfg["clone_min_ink_fraction"],
-            "method": "Otsu ink, long straight lines removed, middle 96% of ink mass, scale by ink spread, "
-                      "small blur, phase correlation shift, Pearson score",
+            "method": "Otsu ink, long straight lines removed, farthest 2% of ink dropped, scale by ink spread, "
+                      "small blur, cross-correlation shift, Pearson score",
             "status": cfg["status"]}
 
 

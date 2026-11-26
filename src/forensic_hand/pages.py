@@ -17,10 +17,13 @@ import pypdfium2 as pdfium
 from PIL import Image
 
 from .case import CaseError
+from .imaging import on_white
 from .quality import _clean_dpi
 
 IMAGE_TYPES = {"png", "jpeg", "tiff", "bmp", "gif", "webp"}
 MAX_PREVIEW_WIDTH = 4000
+MAX_PREVIEW_SIDE = 8000
+MAX_PREVIEW_PIXELS = 40_000_000
 MIN_CROP_DPI, MAX_CROP_DPI, DEFAULT_PDF_DPI = 72, 1200, 300
 MAX_RENDER_PIXELS = 60_000_000
 MIN_BOX_SIDE = 4
@@ -133,6 +136,12 @@ def _open_frame(path: Path, page: int) -> Image.Image:
     return img
 
 
+def preview_scale(page_w: float, page_h: float, width: int) -> float:
+    """Scale for a preview of the asked width, made smaller when the result would be too tall or too large."""
+    scale = width / page_w
+    return min(scale, MAX_PREVIEW_SIDE / page_h, math.sqrt(MAX_PREVIEW_PIXELS / (page_w * page_h)))
+
+
 def render_preview(case, record, page, width: int) -> Image.Image:
     """A picture of a page for the screen. Not evidence: it is resized to fit."""
     geo = _page(case, record, page)
@@ -140,15 +149,16 @@ def render_preview(case, record, page, width: int) -> Image.Image:
     path = _source(case, record)
 
     def make():
+        scale = preview_scale(geo["width"], geo["height"], width)
         if geo["units"] == "px":
             with _open_frame(path, page) as frame:
-                img = frame.convert("RGB")
-            height = max(1, round(img.height * width / img.width))
-            return img.resize((width, height), Image.LANCZOS)
+                img = on_white(frame)
+            size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+            return img.resize(size, Image.LANCZOS)
         with _pdfium_lock:
             doc = pdfium.PdfDocument(str(path))
             try:
-                return doc[page - 1].render(scale=width / geo["width"]).to_pil().convert("RGB")
+                return doc[page - 1].render(scale=scale).to_pil().convert("RGB")
             finally:
                 doc.close()
 

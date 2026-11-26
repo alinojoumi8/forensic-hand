@@ -456,6 +456,7 @@ const doc = {
   unitsToPreview() { return 1 / this.unitsPerPreview(); },
   async load() {
     const g = this.geo();
+    const item = ui.item, page = ui.page;
     this.img = null;
     $("#docHint").hidden = true;
     if (!g) { $("#docHint").textContent = "This item has no pages that the workbench can show."; $("#docHint").hidden = false; this.viewer.render(); return; }
@@ -463,7 +464,7 @@ const doc = {
     const url = withToken(`/api/page/${ui.item}/${ui.page}?w=${width}`);
     try {
       const img = await loadImage(url);
-      if (this.geo() !== g) return;
+      if (ui.item !== item || ui.page !== page) return;   // a newer page was opened meanwhile
       this.img = img;
       this.viewer.fit(img.naturalWidth, img.naturalHeight);
     } catch (error) {
@@ -569,9 +570,17 @@ function commonScale(crops) {
   if (widest > 2400) s = Math.floor(s * 2400 / widest);
   return Math.max(s, 1);
 }
+function unscaledHeight(crops) {
+  let height = Math.min(600, Math.max(...crops.map((c) => c.height)));
+  const widest = Math.max(...crops.map((c) => (c.width * height) / c.height));
+  if (widest > 2400) height = Math.floor((height * 2400) / widest);
+  return Math.max(1, height);
+}
 function panelSize(c, scale, height) {
   if (scale) return [Math.max(1, Math.round(c.width * scale / c.dpi[0])), Math.max(1, Math.round(c.height * scale / c.dpi[1]))];
-  return [Math.max(1, Math.round(c.width * height / c.height)), height];
+  const width = Math.round((c.width * height) / c.height);
+  if (width > 2400) return [2400, Math.max(1, Math.round((c.height * 2400) / c.width))];
+  return [Math.max(1, width), height];
 }
 
 function tinted(img, size, color) {
@@ -579,6 +588,8 @@ function tinted(img, size, color) {
   [canvas.width, canvas.height] = size;
   const c = canvas.getContext("2d");
   c.imageSmoothingQuality = "high";
+  c.fillStyle = "#fff";                       // transparent parts are white paper, not black
+  c.fillRect(0, 0, size[0], size[1]);
   c.drawImage(img, 0, 0, size[0], size[1]);
   const data = c.getImageData(0, 0, size[0], size[1]);
   const p = data.data;
@@ -593,7 +604,7 @@ function tinted(img, size, color) {
 }
 
 const cmp = {
-  viewers: [], ov: { dx: 0, dy: 0, rotation: 0, scale: 1, opacity: 0.8 },
+  viewers: [], buildId: 0, ov: { dx: 0, dy: 0, rotation: 0, scale: 1, opacity: 0.8 },
   init() {
     for (const id of ["#cmpSame", "#cmpLink", "#cmpOverlay"]) $(id).onchange = () => this.build();
     $("#cmpFit").onclick = () => this.fitAll();
@@ -613,6 +624,7 @@ const cmp = {
   redraw() { for (const v of this.viewers) v.render(); },
   fitAll() { for (const v of this.viewers) v.fitBox && v.fitBox(); },
   async build() {
+    const build = ++this.buildId;
     for (const v of this.viewers) v.destroy();
     this.viewers = [];
     const panes = $("#cmpPanes");
@@ -628,8 +640,10 @@ const cmp = {
     if (!crops.length) return;
     const same = $("#cmpSame").checked;
     const scale = same ? commonScale(crops) : null;
-    const height = Math.min(600, Math.max(...crops.map((c) => c.height)));
+    const height = unscaledHeight(crops);
     const imgs = await Promise.all(crops.map((c) => loadImage(cropUrl(c.crop_id)).catch(() => null)));
+    if (build !== this.buildId) return;          // a newer build started while the pictures loaded
+    panes.replaceChildren();
     if (overlay) return this.buildOverlay(crops, imgs, scale, height);
     panes.style.gridTemplateColumns = `repeat(${crops.length <= 2 ? crops.length : 2}, minmax(0, 1fr))`;
     const sizes = crops.map((c) => (same ? panelSize(c, scale, height) : [c.width, c.height]));
