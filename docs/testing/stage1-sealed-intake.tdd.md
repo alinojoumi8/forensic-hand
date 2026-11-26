@@ -115,3 +115,16 @@ Command: `coderabbit review --committed --base-commit e9b5b75 --agent` (the fixe
 
 Result: 173 passed (including the 2 network tests), coverage 91%, ruff clean, 21,200 fuzz inputs with 0 crashes.
 The Edge, pyHanko and Pillow files give the same findings as before.
+
+## CodeRabbit review 3 (2026-11-26)
+
+Command: `coderabbit review --committed --base-commit 112c8bd --agent`. 3 findings, all real, all fixed.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | A large plain drawing was read fully before the size check | Declared /Length is checked first; PDFs over 256 MB are stored and hashed but not screened (`PDF-TOO-LARGE`) |
+| 2 | Two compression stages could pass the size limit | Each stage of the filter chain is decoded with its own cap; an unmeasured stage inside a chain is refused |
+| 3 | The store checked only the owner write bit | It checks owner, group and other write bits |
+
+Result: 181 passed (including the 2 network tests), coverage 91%, ruff clean, 0 fuzz crashes.
+The Edge, pyHanko and Pillow files give the same findings as before.

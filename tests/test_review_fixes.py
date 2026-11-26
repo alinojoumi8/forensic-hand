@@ -448,3 +448,103 @@ def test_r2_decoded_size_is_measured_with_a_cap():
 def test_r2_the_guide_says_an_unchecked_signature_is_recorded_as_not_checked():
     readme = (pathlib.Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
     assert '"not checked"' in readme and "INCOMPLETE" in readme
+
+
+# ================================================ CodeRabbit review 3 (2026-11-26)
+
+def _stream(pdf, data: bytes, filters):
+    from pikepdf import Array, Name
+
+    if not filters:
+        return pdf.make_stream(data)
+    names = [Name(f) for f in filters]
+    return pdf.make_stream(data, Filter=names[0] if len(names) == 1 else Array(names))
+
+
+def test_r3_a_two_stage_flate_bomb_is_bounded():
+    import zlib
+
+    import pikepdf
+
+    from forensic_hand.pdf_audit import decoded_size_bound
+
+    inner = zlib.compress(b"q Q\n" * (3 * 1024 * 1024), 9)      # 12 MB when fully decoded
+    outer = zlib.compress(inner, 9)
+    pdf = pikepdf.new()
+    stream = _stream(pdf, outer, ["/FlateDecode", "/FlateDecode"])
+    assert len(outer) < 4096
+    assert decoded_size_bound(stream) is None
+
+
+def test_r3_common_filter_chains_are_measured_exactly():
+    import base64
+    import binascii
+    import zlib
+
+    import pikepdf
+
+    from forensic_hand.pdf_audit import decoded_size_bound
+
+    body = b"q Q\n" * 100
+    pdf = pikepdf.new()
+    a85 = base64.a85encode(zlib.compress(body)) + b"~>"
+    ahx = binascii.hexlify(zlib.compress(body)) + b">"
+    assert decoded_size_bound(_stream(pdf, a85, ["/ASCII85Decode", "/FlateDecode"])) == 400
+    assert decoded_size_bound(_stream(pdf, ahx, ["/ASCIIHexDecode", "/FlateDecode"])) == 400
+    assert decoded_size_bound(_stream(pdf, body, [])) == 400
+
+
+def test_r3_an_unmeasured_filter_inside_a_chain_is_not_trusted():
+    import zlib
+
+    import pikepdf
+
+    from forensic_hand.pdf_audit import decoded_size_bound
+
+    pdf = pikepdf.new()
+    stream = _stream(pdf, zlib.compress(b"\x80" * 10), ["/FlateDecode", "/RunLengthDecode"])
+    assert decoded_size_bound(stream) == 10 * 1000                # last stage: estimate
+    stream = _stream(pdf, b"\x00a\x80", ["/RunLengthDecode", "/FlateDecode"])
+    assert decoded_size_bound(stream) is None                     # inside the chain: refused
+
+
+def test_r3_a_large_plain_drawing_is_refused_by_size(tmp_path):
+    import pikepdf
+
+    from forensic_hand.pdf_audit import decoded_size_bound
+
+    pdf = pikepdf.new()
+    assert decoded_size_bound(_stream(pdf, b"q Q\n" * (3 * 1024 * 1024), [])) is None
+
+
+def test_r3_a_pdf_over_the_size_limit_is_stored_but_not_screened(tmp_path, monkeypatch):
+    from conftest import text_pdf
+
+    from forensic_hand import pdf_audit
+
+    path = tmp_path / "big.pdf"
+    path.write_bytes(text_pdf())
+    monkeypatch.setattr(pdf_audit, "MAX_PDF_BYTES", 100)
+    result = audit_pdf(path)
+    assert [f["code"] for f in result["findings"]] == ["PDF-TOO-LARGE"]
+
+
+@pytest.mark.parametrize("mode", [0o100420, 0o100402, 0o100644])
+def test_r3_any_write_bit_on_a_stored_copy_is_removed_on_reuse(tmp_path, sharp_png, monkeypatch, mode):
+    case = Case.create(tmp_path / "c", title="t")
+    rec = case.add_evidence(sharp_png, role="questioned")
+    stored = case.path / rec["stored_as"]
+    real_stat, calls = os.stat, []
+
+    def fake_stat(path, *a, **k):
+        result = real_stat(path, *a, **k)
+        if pathlib.Path(path) == stored:
+            return os.stat_result((mode, *tuple(result)[1:]))
+        return result
+
+    def record_chmod(path, value):
+        calls.append(value)
+    monkeypatch.setattr(store_mod.os, "stat", fake_stat)
+    monkeypatch.setattr(store_mod.os, "chmod", record_chmod)
+    case.add_evidence(sharp_png, role="known")
+    assert stat.S_IREAD in calls

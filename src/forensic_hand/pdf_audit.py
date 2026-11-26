@@ -6,6 +6,7 @@ Metadata is easy to edit. Treat every result as a lead to follow, never as proof
 
 from __future__ import annotations
 
+import base64
 import io
 import math
 import re
@@ -21,6 +22,7 @@ from .quality import edge_sharpness, sharpness_findings
 from .verify_case import sha256_hex
 
 MAX_PAGES = 500
+MAX_PDF_BYTES = 256 * 1024 * 1024   # larger files are hashed and stored, but not screened
 MAX_IMAGES = 400
 MAX_REVISIONS = 20
 MAX_DECODED_IMAGES = 20
@@ -34,8 +36,8 @@ MAX_PAGE_IMAGE_RECORDS = 1_000
 # measured in steps BEFORE the drawing is read, so a bomb never fills the memory.
 MAX_STREAM_BYTES = 4 * 1024 * 1024
 MAX_CONTENT_BYTES = 64 * 1024 * 1024
-_SHRINKING_FILTERS = {"/ASCIIHexDecode", "/ASCII85Decode"}
-_UNKNOWN_FILTER_RATIO = 1000   # assumed worst expansion for filters that are not measured
+_UNKNOWN_FILTER_RATIO = 1000   # assumed worst expansion of a filter that is not measured
+_WHITESPACE = re.compile(rb"[\x00\t\n\x0c\r ]+")
 IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 
 _SECTION_END = re.compile(rb"startxref\s+(\d+)\s+%%EOF")
@@ -278,24 +280,59 @@ def _content_streams(target) -> list:
     return [target] if isinstance(target, pikepdf.Stream) else []
 
 
+def _ascii_hex(data: bytes) -> bytes:
+    text = _WHITESPACE.sub(b"", data).split(b">", 1)[0]
+    return bytes.fromhex((text + b"0" if len(text) % 2 else text).decode("ascii"))
+
+
+def _ascii_85(data: bytes) -> bytes:
+    text = _WHITESPACE.sub(b"", data)
+    text = text[2:] if text.startswith(b"<~") else text
+    return base64.a85decode(text.split(b"~>", 1)[0])
+
+
 def decoded_size_bound(stream, limit: int = MAX_STREAM_BYTES) -> int | None:
     """Return the decoded size of a stream (exact, or an upper bound), or None when it is above limit.
 
-    Flate data is decoded in steps with a size cap, so a compression bomb cannot fill the memory.
+    Each stage of the filter chain is decoded in turn, and every stage output is capped at limit,
+    so neither a compression bomb nor a chain of them can fill the memory. A stage that cannot be
+    measured is allowed only as the last stage, with a worst-case expansion estimate.
+    The encoded input is bounded first: by its declared /Length, and by the file size limit.
     """
-    raw = stream.read_raw_bytes()
+    encoded_limit = 2 * limit + 1024          # ASCII hex doubles the size: the most an input can shrink
+    try:
+        declared = int(stream.get("/Length", 0))
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > encoded_limit:
+        return None
+    data = stream.read_raw_bytes()
+    if len(data) > encoded_limit:
+        return None
     filters = stream.get("/Filter")
     names = [] if filters is None else [str(f) for f in (filters if isinstance(filters, pikepdf.Array) else [filters])]
-    if all(name in _SHRINKING_FILTERS for name in names):
-        size = len(raw)
-    elif names == ["/FlateDecode"]:
+    for index, name in enumerate(names):
+        last = index == len(names) - 1
         try:
-            size = len(zlib.decompressobj().decompress(raw, limit + 1))
-        except zlib.error:
-            size = len(raw) * _UNKNOWN_FILTER_RATIO
-    else:
-        size = len(raw) * _UNKNOWN_FILTER_RATIO
-    return size if size <= limit else None
+            if name == "/ASCIIHexDecode":
+                data = _ascii_hex(data)
+            elif name == "/ASCII85Decode":
+                data = _ascii_85(data)
+            elif name == "/FlateDecode":
+                data = zlib.decompressobj().decompress(data, limit + 1)
+            elif last:
+                estimate = len(data) * _UNKNOWN_FILTER_RATIO
+                return estimate if estimate <= limit else None
+            else:
+                return None                    # an unmeasured stage inside a chain cannot be bounded
+        except (ValueError, zlib.error):
+            if not last:
+                return None
+            estimate = len(data) * _UNKNOWN_FILTER_RATIO
+            return estimate if estimate <= limit else None
+        if len(data) > limit:
+            return None
+    return len(data)
 
 
 class _PageScan:
@@ -335,7 +372,8 @@ def _walk(target, resources, ctm, scan: _PageScan, depth: int) -> None:
     for stream in _content_streams(target):
         size = decoded_size_bound(stream)
         if size is None:
-            scan.budget.stop(f"a drawing is larger than {MAX_STREAM_BYTES // (1024 * 1024)} MB when decoded")
+            scan.budget.stop(f"a drawing is larger than {MAX_STREAM_BYTES // (1024 * 1024)} MB when decoded, "
+                             "or its size cannot be measured safely")
         scan.spend("content_bytes", size)
     for item in pikepdf.parse_content_stream(target):
         scan.spend("operators")
@@ -427,6 +465,12 @@ def _scan_page(page_obj, number: int, cfg: dict, budget: _Budget) -> tuple[dict,
 def audit_pdf(path, config: dict | None = None) -> dict:
     """Screen one PDF file. A broken file gives a finding, not a crash."""
     cfg = config or DEFAULTS
+    size = Path(path).stat().st_size
+    if size > MAX_PDF_BYTES:
+        return {"facts": {"size": size}, "findings": [finding(
+            "PDF-TOO-LARGE", "warning", "The PDF is too large to screen. It was not examined.",
+            detail=f"{size} bytes (limit {MAX_PDF_BYTES} bytes).",
+            limits="The file is stored and hashed. Its content is not checked.", size=size)]}
     data = Path(path).read_bytes()
     raw = scan_raw(data)
     facts: dict = {
