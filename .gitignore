@@ -1,0 +1,15 @@
+# Real case files are private. Never commit them.
+cases/
+*.zip
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_tmp/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
