@@ -52,6 +52,11 @@ OID_TST_INFO = "1.2.840.113549.1.9.16.1.4"
 EVIDENCE_PATH = re.compile(r"^evidence/[0-9a-f]{64}\.[a-z0-9]{1,8}$")
 SEAL_PATH = re.compile(r"^seals/seal-\d{4}\.json$")
 TSR_PATH = re.compile(r"^seals/seal-\d{4}\.tsr$")
+# Files that the tool makes from the evidence: crops and comparison charts.
+MADE_FILES = {
+    "crop.created": ("crop_id", "derived", re.compile(r"^derived/[0-9a-f]{64}\.png$")),
+    "exhibit.created": ("exhibit_id", "exhibits", re.compile(r"^exhibits/[0-9a-f]{64}\.png$")),
+}
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -364,7 +369,7 @@ def verify_case(case_dir, ca_file=None, openssl=None, check_tsa_signature=True) 
     problems: list[str] = []
     notes: list[str] = []
     unchecked: list[str] = []
-    summary = {"ledger_entries": 0, "ledger_head": ZERO_HASH, "evidence_files": 0, "seals": 0,
+    summary = {"ledger_entries": 0, "ledger_head": ZERO_HASH, "evidence_files": 0, "made_files": 0, "seals": 0,
                "timestamps": 0, "timestamps_signature_ok": 0, "last_seal": None}
     try:
         _verify(Path(case_dir), problems, notes, unchecked, summary, ca_file, openssl, check_tsa_signature)
@@ -390,6 +395,7 @@ def _verify(root: Path, problems, notes, unchecked, summary, ca_file, openssl, c
         problems.append("ledger does not start with a case.created event")
 
     _check_evidence(root, entries, problems, summary)
+    _check_made_files(root, entries, problems, summary)
     seals = _check_seals(root, entries, problems, summary)
     _check_timestamps(root, entries, seals, problems, notes, unchecked, summary, ca_file, openssl, check_signature)
 
@@ -438,6 +444,45 @@ def _check_evidence(root: Path, entries: list[dict], problems: list[str], summar
         for path in sorted(folder.iterdir()):
             if f"evidence/{path.name}" not in by_path:
                 problems.append(f"evidence folder holds a file that the ledger does not know: {path.name}")
+
+
+def _check_made_files(root: Path, entries: list[dict], problems: list[str], summary: dict) -> None:
+    """Crops and charts: each file must match its ledger record, and no unknown file may sit beside them."""
+    by_path: dict[str, list[tuple[str, dict]]] = {}
+    for entry in entries:
+        rule = MADE_FILES.get(entry["type"])
+        if rule is None:
+            continue
+        id_key, _, pattern = rule
+        data = entry["data"]
+        name = data.get("file")
+        if not isinstance(name, str) or not pattern.match(name):
+            problems.append(f"{_label(data.get(id_key))}: the ledger holds an unsafe file path")
+            continue
+        by_path.setdefault(name, []).append((_label(data.get(id_key)), data))
+    for name, records in sorted(by_path.items()):
+        ids = ", ".join(label for label, _ in records)
+        path = root / name
+        if not path.is_file():
+            problems.append(f"{ids}: file is missing ({name})")
+            continue
+        try:
+            actual = hash_file(path)
+        except OSError as exc:
+            problems.append(f"{ids}: file cannot be read ({name}): {exc}")
+            continue
+        wrong = [label for label, data in records
+                 if actual["sha256"] != data.get("sha256") or actual["size"] != data.get("size")]
+        if wrong:
+            problems.append(f"{', '.join(wrong)}: file content does not match the ledger ({name})")
+            continue
+        summary["made_files"] += len(records)
+    for _, folder_name, _ in MADE_FILES.values():
+        folder = root / folder_name
+        if folder.is_dir():
+            for path in sorted(folder.iterdir()):
+                if f"{folder_name}/{path.name}" not in by_path:
+                    problems.append(f"{folder_name} folder holds a file that the ledger does not know: {path.name}")
 
 
 def _check_seals(root: Path, entries: list[dict], problems: list[str], summary: dict) -> dict[int, dict]:
@@ -498,6 +543,17 @@ def _check_seals(root: Path, entries: list[dict], problems: list[str], summary: 
         if listed != expected:
             problems.append(f"seal {number}: the evidence list in the seal does not match the ledger")
             continue
+        if _is_int(body.get("format")) and body["format"] >= 2:
+            try:
+                made = {(item["id"], item["sha256"]) for item in body["derived"]}
+            except (KeyError, TypeError):
+                problems.append(f"seal {number}: seal file cannot be read")
+                continue
+            expected_made = {(e["data"].get(MADE_FILES[e["type"]][0]), e["data"].get("sha256"))
+                             for e in entries[:seq + 1] if e["type"] in MADE_FILES}
+            if made != expected_made:
+                problems.append(f"seal {number}: the list of crops and charts in the seal does not match the ledger")
+                continue
         valid[number] = event
         summary["seals"] += 1
     return valid
@@ -605,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
     _say(f"Folder:         {args.case}")
     _say(f"Ledger:         {info['ledger_entries']} event(s), head {info['ledger_head']}")
     _say(f"Evidence files: {info['evidence_files']} item(s) match the ledger")
+    _say(f"Made files:     {info['made_files']} crop(s) and chart(s) match the ledger")
     _say(f"Seals:          {info['seals']} valid; {info['timestamps']} time stamp(s) match their seal; "
          f"{info['timestamps_signature_ok']} with a checked signature")
     if info["last_seal"]:

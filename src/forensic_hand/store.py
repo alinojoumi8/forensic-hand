@@ -85,3 +85,33 @@ def store_file(src: Path, evidence_dir: Path) -> dict:
             incoming.unlink()
     return {"sha256": digest, "blake2b": b2.hexdigest(), "size": size, "media_type": media,
             "stored_as": f"evidence/{final.name}"}
+
+
+def store_bytes(data: bytes, folder: Path, extension: str) -> dict:
+    """Store bytes made by the tool (a crop, a chart) by their SHA-256, read-only.
+
+    Returns the hash, the size, the path relative to the case and whether the file is new.
+    """
+    folder.mkdir(exist_ok=True)
+    digest = hashlib.sha256(data).hexdigest()
+    final = folder / f"{digest}{extension}"
+    created = not final.exists()
+    if created:
+        incoming = folder / f".incoming-{uuid.uuid4().hex}"
+        try:
+            with open(incoming, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(incoming, stat.S_IREAD)
+            os.replace(incoming, final)
+        finally:
+            if incoming.exists():
+                os.chmod(incoming, stat.S_IREAD | stat.S_IWRITE)
+                incoming.unlink()
+    else:
+        if hash_file(final)["sha256"] != digest:
+            raise StoreError(f"a stored file is damaged: {final.name}")
+        if os.stat(final).st_mode & _ANY_WRITE:
+            os.chmod(final, stat.S_IREAD)
+    return {"sha256": digest, "size": len(data), "file": f"{folder.name}/{final.name}", "created": created}

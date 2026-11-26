@@ -31,6 +31,18 @@ DEFAULTS = {
     "known_count_notice_below": 15,
     "contemporaneous_years": 3,
 
+    # Copy check (digital cut and paste). Screening values, to be validated.
+    # Ink is scaled so that its spread (radius of gyration) is this many pixels, then blurred a little.
+    # Long straight lines and the outer 2% of ink mass are ignored. Tuned on synthetic lines only:
+    # copies (resized, JPEG, pasted on a printed line) scored 0.95 or more, natural variation 0.83 or less.
+    "clone_radius_px": 160,
+    "clone_blur_px": 1.5,
+    "clone_rotations_deg": [-3, -2, -1, 0, 1, 2, 3],
+    "clone_notice_at": 0.90,
+    "clone_warning_at": 0.95,
+    "clone_max_aspect_diff": 0.10,
+    "clone_min_ink_fraction": 0.002,
+
     # PDF
     "pdf_scan_coverage": 0.8,
     "pdf_overlay_max_coverage": 0.5,

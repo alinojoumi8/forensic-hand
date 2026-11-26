@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forensic-hand workbench</title>
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true">fh</span>
+    <div class="brand-text">
+      <div class="case-title" id="caseTitle">Loading case…</div>
+      <div class="case-sub" id="caseSub">forensic-hand workbench</div>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="tab-document" data-tab="document" aria-selected="true">Document</button>
+    <button role="tab" id="tab-compare" data-tab="compare" aria-selected="false">Compare</button>
+    <button role="tab" id="tab-measure" data-tab="measure" aria-selected="false">Measure</button>
+    <button role="tab" id="tab-chart" data-tab="chart" aria-selected="false">Chart</button>
+  </nav>
+  <div class="actions">
+    <button class="btn" id="btnClones" title="Look for crops that match point for point">Copy check</button>
+    <button class="btn" id="btnSeal" title="Seal the present state of the case">Seal</button>
+    <button class="btn primary" id="btnReport" title="Write and open the report">Report</button>
+  </div>
+</header>
+
+<aside class="left" aria-label="Case contents">
+  <section class="rail">
+    <h2>Items</h2>
+    <ul class="list" id="itemList"></ul>
+  </section>
+  <section class="rail">
+    <h2>Crops <span class="count" id="cropCount"></span></h2>
+    <div class="crop-grid" id="cropGrid"></div>
+    <p class="empty" id="cropEmpty">No crops yet. Open an item, choose Crop, and drag a box.</p>
+  </section>
+  <section class="rail">
+    <h2>Charts</h2>
+    <ul class="list" id="chartList"></ul>
+    <p class="empty" id="chartEmpty">No charts yet.</p>
+  </section>
+</aside>
+
+<main class="stage">
+  <section class="view" id="view-document" role="tabpanel" aria-labelledby="tab-document">
+    <div class="toolbar">
+      <div class="group">
+        <strong id="docName">No item open</strong>
+        <button class="btn icon" id="docPrev" title="Previous page" aria-label="Previous page">‹</button>
+        <span id="docPage" class="muted">–</span>
+        <button class="btn icon" id="docNext" title="Next page" aria-label="Next page">›</button>
+      </div>
+      <div class="group" role="group" aria-label="Tool">
+        <button class="btn tool" id="toolPan" aria-pressed="true" title="Move the page (H)">Move</button>
+        <button class="btn tool" id="toolCrop" aria-pressed="false" title="Draw a crop box (C)">Crop</button>
+      </div>
+      <div class="group">
+        <button class="btn icon" data-zoom="out" title="Zoom out (-)" aria-label="Zoom out">−</button>
+        <button class="btn" data-zoom="fit" title="Fit (0)">Fit</button>
+        <button class="btn icon" data-zoom="in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+        <span class="muted zoom" id="docZoom"></span>
+      </div>
+    </div>
+    <div class="canvas-wrap"><canvas id="docCanvas"></canvas><p class="hint" id="docHint">Choose an item on the left.</p></div>
+  </section>
+
+  <section class="view" id="view-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+    <div class="toolbar">
+      <div class="group" id="cmpChips"></div>
+      <div class="group">
+        <label class="check"><input type="checkbox" id="cmpSame" checked> Same scale</label>
+        <label class="check"><input type="checkbox" id="cmpLink" checked> Move together</label>
+        <label class="check"><input type="checkbox" id="cmpOverlay"> Overlay</label>
+      </div>
+      <div class="group">
+        <button class="btn" id="cmpFit">Fit</button>
+        <button class="btn" id="cmpClear">Clear</button>
+      </div>
+    </div>
+    <div class="toolbar sub" id="ovControls" hidden>
+      <label>Blue strength <input type="range" id="ovOpacity" min="0.1" max="1" step="0.05" value="0.8"></label>
+      <label>Turn <input type="range" id="ovRot" min="-15" max="15" step="0.1" value="0"> <output id="ovRotOut">0.0°</output></label>
+      <label>Size <input type="range" id="ovScale" min="0.8" max="1.25" step="0.005" value="1"> <output id="ovScaleOut">1.000×</output></label>
+      <span class="muted">Drag to move blue. Shift+drag moves the view.</span>
+      <button class="btn" id="ovReset">Reset</button>
+      <button class="btn primary" id="ovSave">Save as chart</button>
+    </div>
+    <div class="panes" id="cmpPanes"></div>
+    <p class="hint center" id="cmpHint">Add 2 to 4 crops with “Compare +”.</p>
+  </section>
+
+  <section class="view" id="view-measure" role="tabpanel" aria-labelledby="tab-measure" hidden>
+    <div class="toolbar">
+      <div class="group">
+        <label>Crop <select id="msCrop"></select></label>
+      </div>
+      <div class="group" role="group" aria-label="Measurement">
+        <button class="btn tool" id="msLine" aria-pressed="true" title="Length and angle of one line (L)">Line</button>
+        <button class="btn tool" id="msAngle" aria-pressed="false" title="Angle between two lines (A)">Angle</button>
+        <button class="btn" id="msClear" title="Start again (Esc)">Clear</button>
+      </div>
+      <div class="group grow">
+        <output class="readout" id="msReadout">Click two points.</output>
+      </div>
+      <div class="group">
+        <input type="text" id="msNote" placeholder="Note (optional)" maxlength="1000">
+        <button class="btn primary" id="msSave" disabled>Save</button>
+      </div>
+    </div>
+    <div class="canvas-wrap"><canvas id="msCanvas"></canvas><p class="hint" id="msHint">Make a crop first.</p></div>
+  </section>
+
+  <section class="view" id="view-chart" role="tabpanel" aria-labelledby="tab-chart" hidden>
+    <div class="chart-layout">
+      <form class="chart-form" id="chartForm">
+        <label class="field">Title <input type="text" id="chartTitle" maxlength="200" placeholder="Questioned signature and known signatures"></label>
+        <ol class="panel-list" id="chartPanels"></ol>
+        <p class="empty" id="chartPanelsEmpty">Add crops with “Chart +”. Up to 12.</p>
+        <p class="muted small">Panels are shown at the same physical scale when every crop has a known resolution. The chart says how it was made.</p>
+        <button class="btn primary" type="submit" id="chartMake">Make chart</button>
+      </form>
+      <figure class="chart-preview" id="chartPreview">
+        <figcaption class="muted" id="chartCaption">The chart appears here.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+
+<aside class="right" id="inspector" aria-label="Details"></aside>
+
+<footer class="status" id="status">Decision support only. Not a verdict tool. Every action is recorded in the ledger.</footer>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<dialog id="dlgCrop">
+  <form method="dialog" class="dlg">
+    <h3>Save crop</h3>
+    <p class="muted" id="cropInfo"></p>
+    <label class="field">Name <input type="text" id="cropLabel" maxlength="200" placeholder="Signature on page 2"></label>
+    <label class="field" id="cropDpiField">Resolution
+      <select id="cropDpi"></select>
+    </label>
+    <p class="muted small" id="cropNote"></p>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" id="cropSave">Save crop</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgSeal">
+  <form method="dialog" class="dlg">
+    <h3>Seal the case</h3>
+    <p>A seal fixes the present state: every file, crop and chart, and the ledger. Later changes stay visible.</p>
+    <label class="check"><input type="checkbox" id="sealStamp"> Also get a trusted time stamp. This sends one 32-byte hash (no file, no name) to timestamp.digicert.com.</label>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok">Seal now</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgTitle">
+  <form method="dialog" class="dlg">
+    <h3 id="titleHead">Chart title</h3>
+    <label class="field">Title <input type="text" id="titleInput" maxlength="200"></label>
+    <div class="dlg-actions">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok">Save chart</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgClones">
+  <form method="dialog" class="dlg wide">
+    <h3>Copy check</h3>
+    <div id="clonesBody"></div>
+    <div class="dlg-actions"><button class="btn primary" value="ok">Close</button></div>
+  </form>
+</dialog>
+</body>
+</html>

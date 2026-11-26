@@ -29,6 +29,18 @@ def _clean(text: str | None, limit: int = 500) -> str | None:
     return text[:limit] or None
 
 
+_CONTROL_NOT_NEWLINE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
+
+
+def clean_text(text, limit: int = 5000) -> str | None:
+    """Free text from the examiner: line breaks kept, other control characters removed."""
+    if text is None:
+        return None
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    text = _CONTROL_NOT_NEWLINE.sub(" ", text).encode("utf-8", "replace").decode("utf-8").strip()
+    return text[:limit] or None
+
+
 def _check_date(text: str | None) -> str | None:
     if text is None:
         return None
@@ -93,29 +105,28 @@ class Case:
         doc_date = _check_date(doc_date)
         if not src.is_file():
             raise CaseError(f"file not found: {src}")
-        number = 1 + sum(1 for rec in self.state()["evidence"] if rec["role"] == role)
-        try:
-            stored = store_file(src, self.path / "evidence")
-        except StoreError as exc:
-            raise CaseError(str(exc)) from exc
-        except OSError as exc:
-            raise CaseError(f"the file could not be copied: {exc}") from exc
-        record = {
-            "id": f"{ROLES[role]}{number}",
-            "role": role,
-            "name": _clean(src.name, 255),   # the name only: a folder path can hold private words
-            **stored,
-            "signer": _clean(signer),
-            "doc_date": doc_date,
-            "note": _clean(note),
-        }
-        self.ledger.append("evidence.added", record)
-        return record
+        with self.ledger.lock():   # the id and the event must not race with another writer
+            number = 1 + sum(1 for rec in self.state()["evidence"] if rec["role"] == role)
+            try:
+                stored = store_file(src, self.path / "evidence")
+            except StoreError as exc:
+                raise CaseError(str(exc)) from exc
+            except OSError as exc:
+                raise CaseError(f"the file could not be copied: {exc}") from exc
+            record = {
+                "id": f"{ROLES[role]}{number}",
+                "role": role,
+                "name": _clean(src.name, 255),   # the name only: a folder path can hold private words
+                **stored,
+                "signer": _clean(signer),
+                "doc_date": doc_date,
+                "note": _clean(note),
+            }
+            self.ledger.append("evidence.added", record)
+            return record
 
     def annotate(self, evidence_id: str, doc_date=None, signer=None, note=None) -> dict:
         """Correct the date, signer or note of an item. The old value stays in the ledger."""
-        if evidence_id not in {rec["id"] for rec in self.state()["evidence"]}:
-            raise CaseError(f"no item with the id {evidence_id}")
         changes = {}
         if doc_date is not None:
             changes["doc_date"] = _check_date(doc_date)
@@ -125,7 +136,10 @@ class Case:
             changes["note"] = _clean(note)
         if not changes:
             raise CaseError("nothing to change")
-        self.ledger.append("evidence.annotated", {"id": evidence_id, "changes": changes})
+        with self.ledger.lock():
+            if evidence_id not in {rec["id"] for rec in self.state()["evidence"]}:
+                raise CaseError(f"no item with the id {evidence_id}")
+            self.ledger.append("evidence.annotated", {"id": evidence_id, "changes": changes})
         return changes
 
     # ------------------------------------------------------------ state
@@ -140,6 +154,7 @@ class Case:
             "case_id": "", "title": "", "created": "", "tool": {},
             "evidence": [], "files": {}, "case_findings": None, "checked_at": None, "env": None,
             "seals": [],
+            "crops": [], "notes": [], "measurements": [], "clone_check": None, "exhibits": [],
             "ledger_count": len(entries),
             "ledger_head": entries[-1]["hash"] if entries else ZERO_HASH,
         }
@@ -169,4 +184,18 @@ class Case:
                 for seal in state["seals"]:
                     if seal["seal_no"] == data["seal_no"]:
                         seal["timestamp"] = data
+            elif kind == "crop.created":
+                state["crops"].append({**data, "created": entry["time"]})
+            elif kind == "note.added":
+                note = {**data, "created": entry["time"], "superseded_by": None}
+                for older in state["notes"]:
+                    if older["note_id"] == data.get("supersedes"):
+                        older["superseded_by"] = data["note_id"]
+                state["notes"].append(note)
+            elif kind == "measure.added":
+                state["measurements"].append({**data, "created": entry["time"]})
+            elif kind == "clone.checked":
+                state["clone_check"] = {**data, "checked": entry["time"]}
+            elif kind == "exhibit.created":
+                state["exhibits"].append({**data, "created": entry["time"]})
         return state

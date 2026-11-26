@@ -128,3 +128,33 @@ Command: `coderabbit review --committed --base-commit 112c8bd --agent`. 3 findin
 
 Result: 181 passed (including the 2 network tests), coverage 91%, ruff clean, 0 fuzz crashes.
 The Edge, pyHanko and Pillow files give the same findings as before.
+
+## Stage 2: workbench (2026-11-26)
+
+Branch `feat/stage2-workbench`. New: page renderer (PDFium), crops, notes, measurements, copy check, charts,
+report section, ledger lock, seal format 2 (lists crops and charts), local server and browser screen.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_workbench.py tests/test_server.py` before the code | `ModuleNotFoundError: No module named 'forensic_hand.pages'` |
+| GREEN | `pytest` (with `FHAND_NETWORK=1`) | 248 passed, coverage 90% |
+| Lint | `uvx ruff check src tests`; `node --check web/app.js` | clean |
+| Stress | 21,200 broken time stamp, PDF and image inputs | 0 crashes |
+
+Browser test (built-in browser, demo case of synthetic files in `cases/demo`): crop from a PDF and from PNGs,
+copy check, compare at the same scale, overlay with hand alignment, overlay chart, panel chart, measurement,
+note, seal, report. The stand-alone checker then gave `RESULT: OK` (4 evidence files, 6 crops and charts).
+
+Faults that only the browser test found, all fixed with a test where the code allows one:
+
+1. PDFium cut crops 1 pixel short (rounding). Crops now land exactly on PDFium's pixel grid.
+2. A chart changed bytes on each run (it printed the newest ledger head). It now prints the case id.
+3. **The copy check missed a real pasted copy (score 0.054)**: the printed signature line in the crop threw
+   off the size step. Now long straight lines, line pieces at the crop edge and the outer 2% of ink mass are
+   ignored, and size is matched by the spread of the ink. The demo copy now scores 0.978.
+4. The drawing area had zero height; the page did not fit; the crop list buttons were cut off; Enter pressed
+   Cancel in the crop dialog; a stray "null" showed; the chart title used a browser pop-up box; the report tab
+   could be blocked with no message.
+
+Copy-check values (synthetic data only, not validated): copies 0.955 to 1.0; natural variation 0.83 or less;
+different signatures about 0.3. Warning from 0.95, note from 0.90.

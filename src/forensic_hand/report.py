@@ -5,9 +5,13 @@ Every value that comes from a file or from the user is escaped. File metadata is
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 from html import escape
 from pathlib import Path
+
+from PIL import Image
 
 from . import TOOL_NAME, __version__
 from .findings import count_levels
@@ -52,6 +56,7 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .finding{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:10px 14px;margin:8px 0}
 .finding .title{font-weight:600}
 .finding .limits{color:var(--muted);font-size:14px}
+td img{display:block;max-width:220px;height:auto;background:#fff;border:1px solid var(--line)}
 .file{margin-top:26px}
 ul{margin:6px 0;padding-left:22px}
 @media print{body{background:#fff;color:#000}main{max-width:none;padding:0}.finding,table{break-inside:avoid}}
@@ -117,6 +122,97 @@ def _file_facts(check: dict) -> list[tuple[str, object]]:
     return []
 
 
+def _thumb(case, record: dict, box=(220, 140)) -> str:
+    """A small picture of a crop for the report, as a data address (no file, no network)."""
+    try:
+        with Image.open(case.path / record["file"]) as img:
+            img = img.convert("RGB")
+            img.thumbnail(box, Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+    except OSError:
+        return '<span class="muted">picture missing</span>'
+    data = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f'<img alt="{_e(record.get("crop_id", ""))}" src="data:image/png;base64,{data}">'
+
+
+def _work_html(case, state) -> str:
+    parts: list[str] = []
+    add = parts.append
+    add('<p class="muted">Everything in this section was done by the examiner in the workbench. '
+        "Each step is an event in the ledger.</p>")
+
+    add("<h3>Crops</h3>")
+    if not state["crops"]:
+        add("<p>No crops.</p>")
+    else:
+        add('<div class="scroll"><table><tr><th>Crop</th><th>Picture</th><th>From</th><th>Area</th>'
+            "<th>How it was made</th><th>SHA-256</th></tr>")
+        for c in state["crops"]:
+            how = ("exact pixels of the file" if c["method"] == "pixels"
+                   else f"drawn from the PDF at {c['render_dpi']} DPI by PDFium")
+            res = f"{c['dpi'][0]} x {c['dpi'][1]} DPI" if c.get("dpi") else "resolution not known"
+            add(f"<tr><td><strong>{_e(c['crop_id'])}</strong><br>{_e(c.get('label') or '')}</td>"
+                f"<td>{_thumb(case, c)}</td><td>{_e(c['evidence_id'])}, page {_e(c['page'])}</td>"
+                f"<td class=\"mono\">{_e(', '.join(str(v) for v in c['box']))} {_e(c['units'])}<br>"
+                f"{_e(c['width'])} x {_e(c['height'])} px, {_e(res)}</td><td>{_e(how)}</td>"
+                f"<td class=\"mono\">{_e(c['sha256'])}</td></tr>")
+        add("</table></div>")
+
+    add("<h3>Measurements</h3>")
+    if not state["measurements"]:
+        add("<p>No measurements.</p>")
+    else:
+        add('<div class="scroll"><table><tr><th>ID</th><th>Crop</th><th>Kind</th><th>Result</th><th>Points (px)</th>'
+            "<th>Note</th></tr>")
+        for m in state["measurements"]:
+            if m["kind"] == "line":
+                length = f"{m['length_mm']} mm" if m.get("length_mm") is not None else f"{m['length_px']} px"
+                result = f"length {length}, angle {m['angle_deg']} degrees"
+            else:
+                result = f"angle between the lines {m['angle_between_deg']} degrees"
+            if not m.get("physical"):
+                result += " (pixel space: resolution not known)"
+            add(f"<tr><td>{_e(m['measure_id'])}</td><td>{_e(m['crop_id'])}</td><td>{_e(m['kind'])}</td>"
+                f"<td>{_e(result)}</td><td class=\"mono\">{_e(m['points'])}</td><td>{_e(m.get('note') or '')}</td></tr>")
+        add("</table></div>")
+
+    add("<h3>Notes</h3>")
+    if not state["notes"]:
+        add("<p>No notes.</p>")
+    for n in state["notes"]:
+        status = f" (replaced by {n['superseded_by']})" if n.get("superseded_by") else ""
+        replaces = f" Replaces {n['supersedes']}." if n.get("supersedes") else ""
+        text = _e(n["text"]).replace("\n", "<br>")
+        add(f'<div class="finding"><span class="title">{_e(n["note_id"])} about {_e(n["target"])}{_e(status)}</span>'
+            f'<div>{text}</div><div class="limits">{_e(n["created"])} (clock of this computer).{_e(replaces)}</div></div>')
+
+    add("<h3>Copy check</h3>")
+    check = state["clone_check"]
+    if not check:
+        add("<p>Not run.</p>")
+    else:
+        add(f'<p class="muted">Run {_e(check["checked"])} on {len(check["crops"])} crop(s). '
+            f"Settings: {_e(check['settings']['method'])}; note from {_e(check['settings']['notice_at'])}, "
+            f"warning from {_e(check['settings']['warning_at'])}. {_e(check['settings']['status'])}</p>")
+        add(_findings_block(check["findings"]))
+        if check["skipped"]:
+            add(f"<p>Skipped (no clear ink): {_e(', '.join(check['skipped']))}.</p>")
+
+    add("<h3>Comparison charts</h3>")
+    if not state["exhibits"]:
+        add("<p>No charts.</p>")
+    else:
+        add('<div class="scroll"><table><tr><th>Chart</th><th>Title</th><th>Kind</th><th>Scale</th><th>File</th>'
+            "<th>SHA-256</th></tr>")
+        for x in state["exhibits"]:
+            scale = f"{x['scale_dpi']} DPI for every panel" if x.get("to_scale") else "NOT TO SCALE"
+            add(f"<tr><td>{_e(x['exhibit_id'])}</td><td>{_e(x['title'])}</td><td>{_e(x['kind'])}</td>"
+                f"<td>{_e(scale)}</td><td class=\"mono\">{_e(x['file'])}</td><td class=\"mono\">{_e(x['sha256'])}</td></tr>")
+        add("</table></div>")
+    return "".join(parts)
+
+
 def build_report(case) -> tuple[str, dict]:
     """Return (html, data). This reads the case. It writes nothing."""
     state = case.state()
@@ -137,6 +233,11 @@ def build_report(case) -> tuple[str, dict]:
         "files": state["files"],
         "seals": state["seals"],
         "env": state["env"],
+        "crops": state["crops"],
+        "measurements": state["measurements"],
+        "notes": state["notes"],
+        "clone_check": state["clone_check"],
+        "exhibits": state["exhibits"],
     }
 
     parts: list[str] = []
@@ -216,8 +317,12 @@ def build_report(case) -> tuple[str, dict]:
         add(_facts_table(_file_facts(check)))
         add("</div>")
 
+    # ---- examiner work
+    add("<h2>6. Examiner work</h2>")
+    add(_work_html(case, state))
+
     # ---- method
-    add("<h2>6. Method and settings</h2>")
+    add("<h2>7. Method and settings</h2>")
     env = state["env"]
     if env:
         packages = ", ".join(f"{k} {v}" for k, v in sorted(env["packages"].items()))

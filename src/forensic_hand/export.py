@@ -5,6 +5,7 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+from .ledger import LOCK_NAME
 from .verify_case import hash_file
 
 
@@ -18,7 +19,8 @@ def export_case(case, out_path) -> dict:
         raise ExportError(f"the file exists already; choose a new name: {out}")
     if case.path.resolve() in out.resolve().parents:
         raise ExportError("save the bundle outside the case folder")
-    files = sorted(p for p in case.path.rglob("*") if p.is_file())
+    # The lock file only coordinates writers on this computer; it is not part of the case.
+    files = sorted(p for p in case.path.rglob("*") if p.is_file() and p.name != LOCK_NAME)
     out.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out, "x", zipfile.ZIP_DEFLATED) as bundle:
         for path in files:

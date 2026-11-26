@@ -126,6 +126,31 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    import webbrowser
+
+    from .server import address, create_server
+
+    try:
+        server = create_server(args.case, port=args.port)
+    except OSError as exc:
+        raise CaseError(f"the workbench could not start on port {args.port}: {exc}") from exc
+    url = address(server)
+    _say("Workbench running on this computer only. Keep this window open; press Ctrl+C to stop.")
+    _say(f"Open: {url}")
+    _say("The address holds a one-time key. Do not share it.")
+    sys.stdout.flush()   # show the address at once, also when the output is not a terminal
+    if not args.no_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        _say("Workbench stopped.")
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_intake(args) -> int:
     case = Case.create(args.case, title=args.title)
     _say(f"Case folder: {case.path}")
@@ -212,6 +237,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("case")
     p.add_argument("out", help="name of the new zip file")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("serve", help="open the workbench in your browser (this computer only)")
+    p.add_argument("case")
+    p.add_argument("--port", type=int, default=0, help="port number (default: a free port)")
+    p.add_argument("--no-browser", action="store_true", help="print the address but do not open a browser")
+    p.set_defaults(func=cmd_serve)
     return parser
 
 

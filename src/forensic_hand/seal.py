@@ -62,16 +62,23 @@ def _append_or_undo(case, kind: str, data: dict, path, wrote_file: bool) -> None
 
 # ---------------------------------------------------------------- seal
 
+def made_files(state: dict) -> list[dict]:
+    """Files that the tool made (crops, charts), in ledger order."""
+    return ([{"id": c["crop_id"], "sha256": c["sha256"]} for c in state["crops"]]
+            + [{"id": x["exhibit_id"], "sha256": x["sha256"]} for x in state["exhibits"]])
+
+
 def seal_bytes(state: dict, number: int, seq: int, head: str) -> bytes:
     body = {
         "kind": "forensic-hand seal",
-        "format": 1,
+        "format": 2,
         "case_id": state["case_id"],
         "seal_no": number,
         "ledger_seq": seq,
         "ledger_head": head,
         "evidence": [{"id": r["id"], "sha256": r["sha256"], "blake2b": r["blake2b"], "size": r["size"]}
                      for r in state["evidence"]],
+        "derived": made_files(state),
         "created_claimed": utc_now(),
         "tool": {"name": TOOL_NAME, "version": __version__},
     }
@@ -86,7 +93,8 @@ def _matches_present_state(raw: bytes, state: dict, number: int, seq: int, head:
         return False
     expected = [(r["id"], r["sha256"], r["blake2b"], r["size"]) for r in state["evidence"]]
     return (body.get("seal_no") == number and body.get("ledger_seq") == seq and body.get("ledger_head") == head
-            and body.get("case_id") == state["case_id"] and listed == expected)
+            and body.get("case_id") == state["case_id"] and listed == expected
+            and body.get("derived", []) == made_files(state))
 
 
 def create_seal(case) -> dict:

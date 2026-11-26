@@ -36,6 +36,30 @@ With `--timestamp`, one 32-byte hash and one random number go to the time stamp 
 
 Add `--timestamp` at the end for a trusted time stamp. Then open `cases\my-case\reports\report.html`.
 
+## Workbench (Stage 2)
+
+```powershell
+.\.venv\Scriptshand.exe serve cases\my-case
+```
+
+Your browser opens the case. Nothing leaves your computer. You can:
+
+- **Crop** a signature: choose Crop, drag a box, give it a name. A picture crop keeps the exact pixels of
+  the file. A PDF crop is drawn by PDFium at a stated resolution (by default, the resolution of the scan).
+- **Compare** 2 to 4 crops side by side at the same physical scale, or **overlay** two crops (red and blue)
+  and align them by hand.
+- **Measure** a line (length in mm and angle) or the angle between two lines.
+- **Copy check**: look for crops that match point for point, as a digital cut and paste does.
+- **Chart**: make a comparison chart for court, at the same scale, with a 10 mm bar and its method notes.
+- **Notes**: write observations. A correction is a new note; the old text stays in the ledger.
+- **Seal** and **Report** from the top bar.
+
+Every action is one event in the ledger. Crops and charts are stored by their SHA-256, set to read-only, and
+listed in the next seal. The checker tests them like the evidence files.
+
+Safety: the workbench listens on 127.0.0.1 only and needs the one-time key in the address that it prints.
+Do not share that address. Press Ctrl+C in its window to stop it.
+
 ## Commands
 
 | Command | What it does |
@@ -50,6 +74,7 @@ Add `--timestamp` at the end for a trusted time stamp. Then open `cases\my-case\
 | `fhand report CASE` | Write `reports\report.html` and `reports\report.json` |
 | `fhand verify CASE` | Check that nothing changed |
 | `fhand export CASE out.zip` | Pack the case for another party |
+| `fhand serve CASE` | Open the workbench in your browser (this computer only) |
 
 ## Check a case
 
@@ -82,7 +107,10 @@ Use `--skip-tsa-signature` to check the structure only, with no OpenSSL.
 - A seal with no time stamp only has the clock of this computer. That clock can be wrong.
 - Dates and program names inside a PDF are plain text. Anyone can edit them. A note is a lead, not proof.
 - The tool does not test if a digital signature inside a PDF is valid.
-- One writer at a time. Do not run two commands on the same case at once.
+- One writer at a time: a lock file (`ledger.lock`) makes a second writer wait. It is not part of the case.
+- The copy check is a screen. Its values were tuned on synthetic lines only, not on real casework.
+  It removes long straight printed lines, but other marks in a crop lower the score: crop tightly.
+- A PDF crop is a new drawing of the page. Above the resolution of the scan, it shows no new detail.
 
 ## Tests
 
@@ -116,3 +144,5 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 | `src/forensic_hand/tsa.py`, `seal.py` | Time stamp and seal |
 | `src/forensic_hand/report.py`, `export.py`, `cli.py` | Report, bundle, commands |
 | `src/forensic_hand/config.py` | The screening values. Each run records them in the log |
+| `src/forensic_hand/pages.py`, `work.py`, `clones.py`, `exhibit.py` | Pages, crops, notes, measurements, copy check, charts |
+| `src/forensic_hand/server.py`, `web/` | The local workbench server and the browser screen |
