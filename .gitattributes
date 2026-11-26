@@ -1,0 +1,8 @@
+# Same bytes on every computer. The checker file (verify_case.py) is copied into each case,
+# and its SHA-256 is recorded in the ledger, so its line endings must never change.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.tif binary
+*.pdf binary
+*.zip binary
