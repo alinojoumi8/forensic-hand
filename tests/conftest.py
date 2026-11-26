@@ -32,6 +32,14 @@ def _no_real_signature_check_for_fake_tokens(request, monkeypatch):
                         lambda *a, **k: ("unavailable", "test token: the signature is not checked in tests"))
 
 
+def is_read_only(path) -> bool:
+    """True when the file mode has no write bit. Unlike os.access, this is the same for every user."""
+    import os
+    import stat
+
+    return not os.stat(path).st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+
+
 # ---------------------------------------------------------------- images
 
 def make_stroke_image(size=(1200, 800), blur=0.0, mode="L") -> Image.Image:

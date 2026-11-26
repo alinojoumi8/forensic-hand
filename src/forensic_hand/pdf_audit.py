@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import math
 import re
+import zlib
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,6 +30,12 @@ MAX_FORM_DEPTH = 6
 MAX_OPERATORS = 1_000_000
 MAX_FORM_PLACEMENTS = 5_000
 MAX_PAGE_IMAGE_RECORDS = 1_000
+# A compressed drawing can be small in the file and huge when decoded. The decoded size is
+# measured in steps BEFORE the drawing is read, so a bomb never fills the memory.
+MAX_STREAM_BYTES = 4 * 1024 * 1024
+MAX_CONTENT_BYTES = 64 * 1024 * 1024
+_SHRINKING_FILTERS = {"/ASCIIHexDecode", "/ASCII85Decode"}
+_UNKNOWN_FILTER_RATIO = 1000   # assumed worst expansion for filters that are not measured
 IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 
 _SECTION_END = re.compile(rb"startxref\s+(\d+)\s+%%EOF")
@@ -233,18 +240,62 @@ def _signatures(pdf, size: int) -> list[dict]:
 
 # ---------------------------------------------------------------- page content
 
+class _BudgetExhausted(Exception):
+    pass
+
+
+_STOP_REASONS = {
+    "operators": "the drawings are too complex (work limit reached)",
+    "forms": "the drawings repeat themselves too many times (work limit reached)",
+    "content_bytes": "the page content is too large in total",
+}
+
+
 class _Budget:
     """Work left for one file. Shared by every page and every nested drawing."""
 
     def __init__(self) -> None:
         self.operators = MAX_OPERATORS
         self.forms = MAX_FORM_PLACEMENTS
+        self.content_bytes = MAX_CONTENT_BYTES
         self.exhausted = False
+        self.reason = ""
         self.stopped_on_page: int | None = None
 
+    def stop(self, reason: str):
+        self.exhausted = True
+        self.reason = self.reason or reason
+        raise _BudgetExhausted
 
-class _BudgetExhausted(Exception):
-    pass
+
+def _content_streams(target) -> list:
+    if isinstance(target, pikepdf.Page):
+        contents = target.obj.get("/Contents")
+        if contents is None:
+            return []
+        items = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
+        return [s for s in items if isinstance(s, pikepdf.Stream)]
+    return [target] if isinstance(target, pikepdf.Stream) else []
+
+
+def decoded_size_bound(stream, limit: int = MAX_STREAM_BYTES) -> int | None:
+    """Return the decoded size of a stream (exact, or an upper bound), or None when it is above limit.
+
+    Flate data is decoded in steps with a size cap, so a compression bomb cannot fill the memory.
+    """
+    raw = stream.read_raw_bytes()
+    filters = stream.get("/Filter")
+    names = [] if filters is None else [str(f) for f in (filters if isinstance(filters, pikepdf.Array) else [filters])]
+    if all(name in _SHRINKING_FILTERS for name in names):
+        size = len(raw)
+    elif names == ["/FlateDecode"]:
+        try:
+            size = len(zlib.decompressobj().decompress(raw, limit + 1))
+        except zlib.error:
+            size = len(raw) * _UNKNOWN_FILTER_RATIO
+    else:
+        size = len(raw) * _UNKNOWN_FILTER_RATIO
+    return size if size <= limit else None
 
 
 class _PageScan:
@@ -252,26 +303,40 @@ class _PageScan:
         self.budget = budget
         self.images: list[dict] = []
         self.images_not_kept = 0
+        self.largest: dict | None = None
         self.visible_text = 0
         self.invisible_text = 0
 
-    def spend(self, kind: str) -> None:
-        left = getattr(self.budget, kind) - 1
+    def spend(self, kind: str, amount: int = 1) -> None:
+        left = getattr(self.budget, kind) - amount
         setattr(self.budget, kind, left)
         if left < 0:
-            self.budget.exhausted = True
-            raise _BudgetExhausted
+            self.budget.stop(_STOP_REASONS[kind])
 
     def add_image(self, record: dict) -> None:
+        area = record["drawn_w_pt"] * record["drawn_h_pt"]
+        if self.largest is None or area > self.largest["drawn_w_pt"] * self.largest["drawn_h_pt"]:
+            self.largest = record
         if len(self.images) < MAX_PAGE_IMAGE_RECORDS:
             self.images.append(record)
         else:
             self.images_not_kept += 1
 
+    def kept_images(self) -> list[dict]:
+        """The kept records, plus the largest picture when the cap dropped it (scan checks need it)."""
+        if self.largest is not None and all(im is not self.largest for im in self.images):
+            return [*self.images, self.largest]
+        return self.images
+
 
 def _walk(target, resources, ctm, scan: _PageScan, depth: int) -> None:
     stack, render_mode = [], 0
     xobjects = resources.get("/XObject") if resources is not None else None
+    for stream in _content_streams(target):
+        size = decoded_size_bound(stream)
+        if size is None:
+            scan.budget.stop(f"a drawing is larger than {MAX_STREAM_BYTES // (1024 * 1024)} MB when decoded")
+        scan.spend("content_bytes", size)
     for item in pikepdf.parse_content_stream(target):
         scan.spend("operators")
         operator = str(item.operator)
@@ -338,7 +403,8 @@ def _scan_page(page_obj, number: int, cfg: dict, budget: _Budget) -> tuple[dict,
     except _BudgetExhausted:
         budget.stopped_on_page = number   # keep what was read so far
     area = max(page_w * page_h, 1.0)
-    for image in scan.images:
+    images = scan.kept_images()
+    for image in images:
         image["page"] = number
         image["page_coverage"] = _r(min(1.0, image["drawn_w_pt"] * unit * image["drawn_h_pt"] * unit / area), 3)
     annots: dict[str, int] = {}
@@ -350,10 +416,10 @@ def _scan_page(page_obj, number: int, cfg: dict, budget: _Budget) -> tuple[dict,
         if subtype not in ("Link", "Popup"):
             annots[subtype] = annots.get(subtype, 0) + 1
     facts = {"page": number, "width_pt": _r(page_w), "height_pt": _r(page_h),
-             "images": len(scan.images) + scan.images_not_kept,
+             "images": len(scan.images) + scan.images_not_kept, "images_not_kept": scan.images_not_kept,
              "visible_text_bytes": scan.visible_text, "invisible_text_bytes": scan.invisible_text,
              "annotations": annots}
-    return facts, scan.images
+    return facts, images
 
 
 # ---------------------------------------------------------------- the audit
@@ -479,6 +545,7 @@ def _page_findings(pdf, facts: dict, cfg: dict) -> list[dict]:
     low_dpi, mid_dpi, ocr_pages, failed, decoded = [], [], [], [], 0
     annot_types: dict[str, int] = {}
     annot_pages: list[int] = []
+    crowded_pages: list[int] = []
     budget = _Budget()
 
     for number, page in enumerate(pdf.pages, start=1):
@@ -494,6 +561,8 @@ def _page_findings(pdf, facts: dict, cfg: dict) -> list[dict]:
             failed.append(number)
             continue
         facts["page_facts"].append(page_facts)
+        if page_facts["images_not_kept"]:
+            crowded_pages.append(number)
 
         main = max(images, key=lambda im: im["page_coverage"], default=None)
         is_scan = main is not None and main["page_coverage"] >= cfg["pdf_scan_coverage"]
@@ -559,14 +628,22 @@ def _page_findings(pdf, facts: dict, cfg: dict) -> list[dict]:
                            limits="Comments, form fields and signature boxes are annotations. They are separate from the page "
                                   "content and can be added or removed at any time.",
                            by_type=annot_types, pages=annot_pages[:50]))
-    if budget.exhausted:
+    if budget.exhausted or crowded_pages:
+        reasons = []
+        if budget.exhausted:
+            reasons.append(f"Screening stopped on page {budget.stopped_on_page} of {facts['pages']}: {budget.reason}. "
+                           "Notes for that page and the pages after it can be missing.")
+        if crowded_pages:
+            reasons.append(f"Page(s) {', '.join(str(n) for n in crowded_pages[:20])} hold more than "
+                           f"{MAX_PAGE_IMAGE_RECORDS} picture placements. Only the first {MAX_PAGE_IMAGE_RECORDS} "
+                           "and the largest were examined, so notes about pictures on top of a scan can be missing.")
         out.append(finding(
-            "PDF-SCREEN-INCOMPLETE", "warning", "The page content is too complex. Screening of this file is not complete.",
-            detail=f"Screening stopped on page {budget.stopped_on_page} of {facts['pages']}. "
-                   "Notes for that page and the pages after it can be missing.",
-            limits="Very complex drawings, or drawings that repeat themselves many times, cause this. "
+            "PDF-SCREEN-INCOMPLETE", "warning", "Screening of this file is not complete.",
+            detail=" ".join(reasons),
+            limits="Very complex, very large or very repetitive page content causes this. "
                    "It does not show what the content is or who made it.",
-            stopped_on_page=budget.stopped_on_page, operator_limit=MAX_OPERATORS, form_limit=MAX_FORM_PLACEMENTS))
+            stopped_on_page=budget.stopped_on_page, reason=budget.reason or None, crowded_pages=crowded_pages[:50],
+            operator_limit=MAX_OPERATORS, form_limit=MAX_FORM_PLACEMENTS, stream_limit_bytes=MAX_STREAM_BYTES))
     if failed:
         out.append(finding("PDF-PAGE-ERROR", "notice", "The content of some pages could not be read.",
                            detail=f"Pages: {', '.join(str(n) for n in failed[:30])}.",

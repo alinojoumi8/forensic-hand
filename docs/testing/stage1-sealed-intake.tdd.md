@@ -101,3 +101,17 @@ Own fault found by the new tests: a time stamp file taken over from a stopped ru
 
 Result after the fixes: 163 passed, 2 network tests passed (real DigiCert stamp, checked by OpenSSL at intake and in
 the checker), coverage 91%, ruff clean. Stress test: 21,200 broken time stamp, PDF and image inputs, 0 crashes.
+
+## CodeRabbit review 2 (2026-11-26)
+
+Command: `coderabbit review --committed --base-commit e9b5b75 --agent` (the fixes only). 4 findings, all real, all fixed.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | README said every recorded stamp passed a signature check | README states the "not checked" case and the INCOMPLETE result |
+| 2 | Over 1,000 small pictures could hide a full-page scan | The largest picture is always kept; crowded pages give `PDF-SCREEN-INCOMPLETE` |
+| 3 | A compressed drawing was fully decoded before the work limit counted | Decoded size is measured in steps (capped) before the drawing is read: 4 MB per drawing, 64 MB per file |
+| 4 | Tests used `os.access` for read-only checks (wrong for admin users) | Tests and store use the file mode bits |
+
+Result: 173 passed (including the 2 network tests), coverage 91%, ruff clean, 21,200 fuzz inputs with 0 crashes.
+The Edge, pyHanko and Pillow files give the same findings as before.

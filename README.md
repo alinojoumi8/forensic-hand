@@ -9,7 +9,9 @@ It helps a human examiner. **It does not decide if a signature is genuine.**
 - **Seals the files.** It copies each file once, hashes it (SHA-256 and BLAKE2b), and sets the copy to read-only.
 - **Keeps a locked log.** Each step is one line in `ledger.log`. Each line holds the hash of the line before it. An edit breaks the chain.
 - **Gets a trusted time stamp** (only if you ask). A public time stamp authority signs the hash of the seal.
-  OpenSSL checks that signature before the stamp is recorded.
+  OpenSSL checks that signature before the stamp is recorded, and a bad signature is refused.
+  If OpenSSL cannot run, the stamp is recorded as "not checked", and the checker reports INCOMPLETE
+  (exit code 3) until the signature is checked on a computer with OpenSSL.
 - **Screens quality.** Resolution, blur, JPEG compression, number and dates of known samples.
 - **Screens PDF structure.** Saves after the first write, changes after a digital signature, pictures pasted on a scan, typed text on a scan, annotations, mismatched metadata.
 - **Writes a report.** One HTML file. It loads nothing from the internet.

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import os
 
 import pytest
+from conftest import is_read_only
 
 from forensic_hand.case import Case, CaseError
 from forensic_hand.checks import run_checks
@@ -42,7 +42,7 @@ def test_add_evidence_stores_identical_bytes_read_only(tmp_path, sharp_png):
     assert rec["blake2b"] == hashlib.blake2b(before).hexdigest()
     assert rec["size"] == len(before)
     assert stored.read_bytes() == before
-    assert not os.access(stored, os.W_OK)
+    assert is_read_only(stored)
     assert sharp_png.read_bytes() == before
 
 

@@ -12,7 +12,7 @@ import stat
 import time
 
 import pytest
-from conftest import fake_tsr, form_bomb_pdf
+from conftest import fake_tsr, form_bomb_pdf, is_read_only
 
 from forensic_hand import seal as seal_mod
 from forensic_hand import store as store_mod
@@ -158,7 +158,7 @@ def test_5_a_seal_file_left_by_a_hard_stop_is_taken_over_when_it_matches(case):
     orphan.write_bytes(seal_mod.seal_bytes(state, 1, seq, head))   # as if the process died here
     seal = create_seal(case)
     assert seal["sha256"] == hashlib.sha256(orphan.read_bytes()).hexdigest()
-    assert not os.access(orphan, os.W_OK)
+    assert is_read_only(orphan)
     assert _verify(case)["ok"] is True
 
 
@@ -197,7 +197,7 @@ def test_7_a_writable_stored_copy_is_made_read_only_again_on_reuse(tmp_path, sha
     stored = case.path / rec["stored_as"]
     _writable(stored)
     case.add_evidence(sharp_png, role="known")
-    assert not os.access(stored, os.W_OK)
+    assert is_read_only(stored)
 
 
 def test_7_a_failed_publish_leaves_no_file_and_records_nothing(tmp_path, sharp_png, monkeypatch):
@@ -218,7 +218,7 @@ def test_7_the_new_file_is_read_only_before_it_gets_its_final_name(tmp_path, sha
     real_replace = os.replace
 
     def watch(src, dst):
-        seen["writable"] = os.access(src, os.W_OK)
+        seen["writable"] = not is_read_only(src)
         return real_replace(src, dst)
     monkeypatch.setattr(store_mod.os, "replace", watch)
     Case.create(tmp_path / "c", title="t").add_evidence(sharp_png, role="questioned")
@@ -249,7 +249,7 @@ def test_8_a_time_stamp_file_left_by_a_hard_stop_is_taken_over_with_no_new_reque
     monkeypatch.setattr(tsa, "request_timestamp", no_network)
     stamp = timestamp_seal(case, url="http://tsa.invalid/tsr")
     assert stamp["recovered_from_earlier_run"] is True
-    assert not os.access(orphan, os.W_OK)
+    assert is_read_only(orphan)
     assert _verify(case)["ok"] is True
 
 
@@ -352,3 +352,99 @@ def test_12_an_unreadable_seal_file_is_a_problem(case, monkeypatch):
     result = _verify(case)
     assert result["ok"] is False
     assert any("seal 1" in p and "cannot be read" in p for p in result["problems"])
+
+
+# ================================================ CodeRabbit review 2 (2026-11-26)
+
+def _crowded_scan_pdf(tiny: int) -> bytes:
+    """`tiny` small pictures first, then a full-page 100 DPI scan, then visible typed text."""
+    import io
+
+    import pikepdf
+    from conftest import make_stroke_image
+    from pikepdf import Dictionary, Name
+
+    pdf = pikepdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    dot = pdf.make_stream(b"\x00" * 4, Type=Name.XObject, Subtype=Name.Image, Width=2, Height=2,
+                          ColorSpace=Name.DeviceGray, BitsPerComponent=8)
+    scan = make_stroke_image(size=(850, 1100))
+    big = pdf.make_stream(scan.tobytes(), Type=Name.XObject, Subtype=Name.Image, Width=850, Height=1100,
+                          ColorSpace=Name.DeviceGray, BitsPerComponent=8)
+    font = pdf.make_indirect(Dictionary(Type=Name.Font, Subtype=Name.Type1, BaseFont=Name.Helvetica))
+    page.obj["/Resources"] = Dictionary(XObject=Dictionary(D=dot, S=big), Font=Dictionary(F1=font))
+    content = b"".join(b"q 1 0 0 1 %d %d cm /D Do Q\n" % (i % 600, i // 600) for i in range(tiny))
+    content += b"q 612 0 0 792 0 0 cm /S Do Q\nBT /F1 12 Tf 72 500 Td (Typed on top) Tj ET\n"
+    page.obj["/Contents"] = pdf.make_stream(content)
+    buf = io.BytesIO()
+    pdf.save(buf)
+    return buf.getvalue()
+
+
+def test_r2_a_crowded_page_keeps_the_scan_checks_and_says_screening_is_incomplete(tmp_path):
+    path = tmp_path / "crowded.pdf"
+    path.write_bytes(_crowded_scan_pdf(tiny=1200))
+    result = audit_pdf(path)
+    codes = {f["code"]: f for f in result["findings"]}
+    assert "PDF-IMG-DPI-LOW" in codes                 # the full-page scan was still found
+    assert "PDF-TEXT-OVER-SCAN" in codes
+    assert codes["PDF-SCREEN-INCOMPLETE"]["data"]["crowded_pages"] == [1]
+    assert result["facts"]["page_facts"][0]["images"] == 1201
+
+
+def test_r2_a_page_under_the_picture_cap_is_unchanged(tmp_path):
+    path = tmp_path / "busy.pdf"
+    path.write_bytes(_crowded_scan_pdf(tiny=50))
+    codes = {f["code"] for f in audit_pdf(path)["findings"]}
+    assert "PDF-SCREEN-INCOMPLETE" not in codes and "PDF-IMG-DPI-LOW" in codes
+
+
+def test_r2_a_compressed_drawing_bomb_is_never_read_into_memory(tmp_path, monkeypatch):
+    import io
+    import zlib
+
+    import pikepdf
+    from pikepdf import Name
+
+    from forensic_hand import pdf_audit
+
+    pdf = pikepdf.new()
+    page = pdf.add_blank_page(page_size=(612, 792))
+    huge = b"q Q\n" * (3 * 1024 * 1024)             # 12 MB of drawing commands when decoded
+    page.obj["/Contents"] = pdf.make_stream(zlib.compress(huge, 9), Filter=Name.FlateDecode)
+    buf = io.BytesIO()
+    pdf.save(buf, compress_streams=False)
+    assert len(buf.getvalue()) < 200_000             # small in the file
+    path = tmp_path / "zbomb.pdf"
+    path.write_bytes(buf.getvalue())
+
+    parsed = []
+    real_parse = pikepdf.parse_content_stream
+    monkeypatch.setattr(pdf_audit.pikepdf, "parse_content_stream",
+                        lambda target, *a: parsed.append(1) or real_parse(target, *a))
+    result = audit_pdf(path)
+    incomplete = [f for f in result["findings"] if f["code"] == "PDF-SCREEN-INCOMPLETE"]
+    assert incomplete and "MB when decoded" in incomplete[0]["detail"]
+    assert parsed == []                               # the drawing list was never built
+
+
+def test_r2_decoded_size_is_measured_with_a_cap():
+    import zlib
+
+    import pikepdf
+    from pikepdf import Name
+
+    from forensic_hand.pdf_audit import decoded_size_bound
+
+    pdf = pikepdf.new()
+    small = pdf.make_stream(zlib.compress(b"q Q\n" * 100), Filter=Name.FlateDecode)
+    plain = pdf.make_stream(b"q Q\n" * 100)
+    big = pdf.make_stream(zlib.compress(b"x" * 5000), Filter=Name.FlateDecode)
+    assert decoded_size_bound(small) == 400
+    assert decoded_size_bound(plain) == 400
+    assert decoded_size_bound(big, limit=1000) is None
+
+
+def test_r2_the_guide_says_an_unchecked_signature_is_recorded_as_not_checked():
+    readme = (pathlib.Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    assert '"not checked"' in readme and "INCOMPLETE" in readme

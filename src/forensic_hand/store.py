@@ -70,7 +70,7 @@ def store_file(src: Path, evidence_dir: Path) -> dict:
         if final.exists():
             if hash_file(final)["sha256"] != digest:
                 raise StoreError(f"a stored file is damaged: {final.name}")
-            if os.access(final, os.W_OK):
+            if os.stat(final).st_mode & stat.S_IWRITE:
                 os.chmod(final, stat.S_IREAD)   # a stored copy must always be read-only
         else:
             # Read-only first, then publish: the stored copy is never writable, even for a moment.
