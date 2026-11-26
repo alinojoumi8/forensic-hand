@@ -39,7 +39,7 @@ Add `--timestamp` at the end for a trusted time stamp. Then open `cases\my-case\
 ## Workbench (Stage 2)
 
 ```powershell
-.\.venv\Scriptshand.exe serve cases\my-case
+.\.venv\Scripts\fhand.exe serve cases\my-case
 ```
 
 Your browser opens the case. Nothing leaves your computer. You can:
