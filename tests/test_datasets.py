@@ -145,6 +145,22 @@ def test_build_from_csv_refuses_a_missing_file(tmp_path):
         ds.build_from_csv(folder, items_csv, title="T", license_class="own", license_name="x", out=folder / "m.json")
 
 
+def test_build_from_csv_with_the_manifest_above_the_folder(tmp_path):
+    # The same --out bug as in the importer: the file paths must be relative to the manifest.
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    save_image(folder / "s1.png", signature_image(1), dpi=(600, 600))
+    items_csv = tmp_path / "items.csv"
+    items_csv.write_text("file,writer_id,kind\ns1.png,p01,genuine\n", encoding="utf-8")
+    out = tmp_path / "manifest.json"
+    manifest = ds.build_from_csv(folder, items_csv, title="T", license_class="own", license_name="x", out=out)
+    assert manifest["items"][0]["file"] == "scans/s1.png"
+    assert ds.verify(ds.load_manifest(out)) == []
+    with pytest.raises(DatasetError, match="above"):
+        ds.build_from_csv(folder, items_csv, title="T", license_class="own", license_name="x",
+                          out=tmp_path / "other" / "m.json")
+
+
 # ================================================ CodeRabbit review 7 (Stage 3)
 
 def test_r7_a_consent_id_used_twice_is_refused(tmp_path):

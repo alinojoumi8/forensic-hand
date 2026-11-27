@@ -16,7 +16,7 @@ from forensic_hand import calibrate as cal
 from forensic_hand import synth, writer
 from forensic_hand.cli import main
 from forensic_hand.config import DEFAULTS
-from forensic_hand.datasets import PRESETS, DatasetError, build_from_names, load_manifest
+from forensic_hand.datasets import PRESETS, DatasetError, build_from_names, load_manifest, verify
 from forensic_hand.imaging import on_white
 from forensic_hand.validation import dossier_html, run_validation
 
@@ -151,6 +151,49 @@ def test_the_blur_and_jpeg_tasks_see_the_ink_of_16_bit_scans(tmp_path):
     clean = tasks["blur-screen"]["rows"][0]
     assert clean["sigma_px"] == 0 and clean["mean_sharpness"] is not None and clean["warning"]["rate"] == 0
     assert all(row["mean_abs_error"] is not None for row in tasks["jpeg-estimate"]["rows"])
+
+
+# ---------------------------------------------------------------- where the manifest is saved
+
+def test_a_manifest_saved_above_the_picture_folder_finds_its_files(tmp_path):
+    # Found on the SOHI import: with --out above the folder, every file was "missing".
+    root = _cedar(tmp_path / "set" / "raw", writers=1, genuine=2, forged=1)
+    out = tmp_path / "set" / "manifest.json"
+    manifest = build_from_names(root, preset="cedar", title="t", license_class="research-only", license_name="x",
+                                out=out)
+    assert all(i["file"].startswith("raw/full_") for i in manifest["items"])
+    assert verify(load_manifest(out)) == []
+    assert manifest["import"]["folder"] == "raw"
+
+
+def test_a_manifest_saved_in_the_picture_folder_keeps_short_paths(tmp_path):
+    root = _cedar(tmp_path, writers=1, genuine=1, forged=1)
+    manifest = build_from_names(root, preset="cedar", title="t", license_class="research-only", license_name="x",
+                                out=root / "manifest.json")
+    assert {i["file"] for i in manifest["items"]} == {"full_org/original_1_1.png", "full_forg/forgeries_1_1.png"}
+    assert manifest["import"]["folder"] == "."
+    assert verify(load_manifest(root / "manifest.json")) == []
+
+
+@pytest.mark.parametrize("where", ["beside", "below"])
+def test_a_manifest_that_cannot_see_the_pictures_is_refused(tmp_path, where):
+    root = _cedar(tmp_path / "set", writers=1, genuine=1, forged=1)
+    out = tmp_path / "other" / "m.json" if where == "beside" else root / "full_org" / "m.json"
+    out.parent.mkdir(exist_ok=True)
+    with pytest.raises(DatasetError, match="above"):
+        build_from_names(root, preset="cedar", title="t", license_class="research-only", license_name="x", out=out)
+    assert not out.exists()
+
+
+def test_the_import_command_writes_a_manifest_above_the_folder(tmp_path, capsys):
+    root = _cedar(tmp_path / "set" / "raw", writers=2, genuine=1, forged=1)
+    base = ["dataset", "import", str(root), "--preset", "cedar", "--title", "t",
+            "--license-class", "research-only", "--license-name", "x"]
+    assert main([*base, "--out", str(tmp_path / "set" / "m.json")]) == 0
+    assert main(["dataset", "verify", str(tmp_path / "set" / "m.json")]) == 0
+    capsys.readouterr()
+    assert main([*base, "--out", str(tmp_path / "elsewhere.json")]) == 2
+    assert "above" in capsys.readouterr().err and not (tmp_path / "elsewhere.json").exists()
 
 
 # ---------------------------------------------------------------- research-only data in use
