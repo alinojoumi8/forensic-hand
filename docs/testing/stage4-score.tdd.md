@@ -188,6 +188,11 @@ signature check, OpenSSL refused the fake time stamp tokens ("there must be one 
 
 Whole suite after these fixes: all pass, 2 network tests skipped. Ruff: all checks passed.
 
+### CodeRabbit review 14 (the review 13 fixes): 0 findings
+
+The first run hit the rate limit ("all 3 included reviews", wait about 4 minutes); the rerun completed with
+no findings.
+
 ## Check in the real app (not a test)
 
 Scratch folder, synthetic data only, 2026-11-27.
