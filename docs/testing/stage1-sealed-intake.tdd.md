@@ -239,3 +239,8 @@ each with a test in `tests/test_datasets.py`:
 2. Degraded real scans imported from CSV could not be paired with their originals: new `sample` column.
 3. `synth` could overwrite images in a folder that was not empty: it now needs an empty folder.
 4. A report mixing real and synthetic data said "synthetic data only": it now says the data is mixed.
+
+## CodeRabbit review 8 (2026-11-27)
+
+Command: `coderabbit review --committed --base-commit b46a40e --agent` (the review-7 fixes only). 0 findings.
+Final: 315 passed, 2 skipped (network tests; they passed when run with FHAND_NETWORK=1 in Stage 2).
