@@ -84,6 +84,27 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
   It needs 6 or more genuine signatures per writer: make the data with `--genuine 8 --forgeries 3`.
 - Every dataset has a manifest with file hashes, a licence class and optional consent records.
   Research-only data may be used for internal benchmarks only; unknown licences are refused.
+- `calibrate` turns the raw score into a **likelihood ratio (LR)**: how much more likely the score is if
+  the known writer wrote the signature (Hp) than if someone else did (Hd: a skilled forger, or a random
+  other writer). The LR is kept inside bounds that the amount of data supports. Licence and consent must
+  allow `calibrate`. A calibration on synthetic data is a **demo**; on real data it is a **candidate**.
+  No case can use either: a case needs a released calibration (see the plan, phases 3 and 4).
+- `validate --calibration FILE` measures a calibration on other writers: Cllr (0 is perfect, 1 is no
+  better than always saying LR 1), Cllr-min, the rates of misleading evidence with 95% intervals that
+  resample whole writers, and a Tippett plot. It warns when a writer was also used to calibrate.
+
+```powershell
+.\.venv\Scripts\fhand.exe synth data\cal-set --writers 20 --genuine 8 --forgeries 3 --seed 4 --writer-prefix c
+```
+
+```powershell
+.\.venv\Scripts\fhand.exe calibrate data\cal-set\manifest.json --propositions skilled-forgery --out data\cal.json
+```
+
+```powershell
+.\.venv\Scripts\fhand.exe validate data\test-set\manifest.json --calibration data\cal.json --out data\lr-test
+```
+
 - **Synthetic results are not error rates on real casework.** The dossier says so. To collect real,
   consented data, see `docs/validation/collection-protocol.md`.
 
@@ -105,7 +126,8 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
 | `fhand synth OUT [--writers N --seed S]` | Make a labelled synthetic dataset |
 | `fhand dataset verify MANIFEST` | Check every file of a dataset against its manifest |
 | `fhand dataset build FOLDER --csv items.csv ...` | Make a manifest for a real collection |
-| `fhand validate MANIFEST --out FOLDER` | Measure the screens and write a validation dossier |
+| `fhand validate MANIFEST --out FOLDER [--calibration FILE]` | Measure the screens (and the LRs of a calibration) and write a validation dossier |
+| `fhand calibrate MANIFEST --propositions skilled-forgery\|other-writer --out FILE` | Fit the writer score to a likelihood ratio |
 
 ## Check a case
 
@@ -180,6 +202,7 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 | `src/forensic_hand/server.py`, `web/` | The local workbench server and the browser screen |
 | `src/forensic_hand/synth.py`, `datasets.py`, `validation.py`, `metrics.py` | Test data, licence and consent gates, validation |
 | `src/forensic_hand/writer.py` | The measures of a signature and the raw writer score (Stage 4) |
+| `src/forensic_hand/calibrate.py` | Score to likelihood ratio: fit, bounds, calibration file (Stage 4) |
 
 ## License
 

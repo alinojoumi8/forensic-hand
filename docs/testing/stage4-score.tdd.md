@@ -9,7 +9,9 @@ All data in these tests is synthetic. It proves the logic. It is not proof on re
    the measures separate genuine signatures from forgeries before anyone calibrates them.
 2. As an examiner, I want each measure to be explainable and independent of the scan resolution,
    so that I can say in court what the tool measured.
-3. (Phases 2 to 4 add their journeys below.)
+3. As a validator, I want to turn the raw score into a likelihood ratio on data whose licence and
+   consent allow it, and to measure that LR on other writers, so that its error rates are known.
+4. (Phases 3 and 4 add their journeys below.)
 
 ## Phase 1: measures and raw score (branch `feat/stage4-writer-score`)
 
@@ -52,3 +54,40 @@ All data in these tests is synthetic. It proves the logic. It is not proof on re
 
 The score is weak on blurred, low-resolution and same-colour-stamp scans when the known scans are
 clean. Phase 4 must refuse a case that is outside the conditions that the calibration tested.
+
+### CodeRabbit review 10 (phase 1): 2 findings, both fixed (commit e7f2b5b)
+
+| Finding | Fix | Test (RED, then GREEN) |
+|---|---|---|
+| A clean item whose `sample` name differs from its id lost all its pairs | Pairs are keyed by the clean original's own id (`validation._origin`), in the writer score and the copy check | `test_clean_items_may_carry_a_sample_name_that_differs_from_their_id` (RED: the clean stratum was missing) |
+| The 40-pixel minimum of the line removal made small crops differ at 2 resolutions | The writer score uses relative lengths only (`fixed_minimum=False`); the copy check is unchanged | `test_a_small_loop_is_measured_the_same_at_twice_the_resolution` (RED: 1 part at 1x, 2 parts at 2x) |
+
+## Phase 2: calibration to a likelihood ratio (branch `feat/stage4-calibration`)
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_calibrate.py` on the phase 1 code | `ImportError: cannot import name 'calibrate'` |
+| GREEN | `pytest tests/test_calibrate.py tests/test_writer.py tests/test_synth.py tests/test_cli.py tests/test_datasets.py` | all pass |
+| Lint | `ruff check src tests` | all checks passed |
+
+| # | What is guaranteed | Test |
+|---|---|---|
+| 1 | Cllr is 1 for "always LR 1", log2(1.1) for LR 10 and 1/10, near 0 for strong correct LRs | `test_cllr_*` |
+| 2 | Cllr-min is 0 for separated scores, 1 for identical scores, and never above a fitted system | `test_cllr_min_*` |
+| 3 | Misleading-evidence rates count the wrong side of LR 1, with Wilson intervals | `test_misleading_evidence_rates_count_the_wrong_side_of_1` |
+| 4 | The writer bootstrap repeats with a seed and draws whole writers | `test_the_writer_bootstrap_is_repeatable_and_resamples_whole_writers` |
+| 5 | The fit finds ln LR = 2 x score for N(1,1) against N(-1,1), and does not depend on class sizes | `test_the_fit_*` |
+| 6 | A score that does not separate the classes is refused | `test_a_score_that_does_not_separate_is_refused` |
+| 7 | Bounds worked by hand: 10 pairs a side allow log10 LR 1 at most; no information gives LR 1 | `test_the_bounds_worked_by_hand`, `test_a_system_with_no_information_gets_bounds_of_lr_1` |
+| 8 | Synthetic data gives a demo calibration that records its model, conditions, writers and pairs | `test_a_synthetic_calibration_is_a_demo`, `test_the_calibration_records_its_model_conditions_and_data` |
+| 9 | The same data gives the same calibration hash; a changed file is refused | `test_the_same_data_gives_the_same_calibration`, `test_a_changed_calibration_file_is_refused` |
+| 10 | Other score settings, research-only data, data without calibrate consent and unknown propositions are refused | `test_a_calibration_of_other_settings_is_refused`, `test_research_only_data_cannot_calibrate`, `test_data_without_consent_to_calibrate_is_left_out_and_reported`, `test_an_unknown_proposition_is_refused` |
+| 11 | The LR stays inside its bounds | `test_applying_the_calibration_keeps_the_lr_inside_its_bounds` |
+| 12 | Validation measures Cllr, Cllr-min, Cllr-cal, misleading rates and Tippett data on new writers | `test_the_validation_measures_the_lr_on_new_data` |
+| 13 | Strata outside the calibration are not measured; reused writers are reported | `test_strata_outside_the_calibration_are_not_measured`, `test_writers_used_to_calibrate_are_reported_when_they_are_tested_again` |
+| 14 | The dossier shows the LR section, the demo banner and a Tippett plot | `test_the_dossier_shows_the_lr_section_with_a_tippett_plot` |
+| 15 | `calibrate` and `validate --calibration` work end to end; an existing file is not overwritten | `test_the_calibrate_and_validate_commands` |
+
+Known flaky test, not caused by Stage 4: `tests/test_server.py::test_a_large_body_is_refused` failed twice in
+full runs with a Windows `ConnectionAbortedError` (the server answers 413 before the client has sent the
+300 kB body). It passed 6 times out of 6 on its own.
