@@ -933,7 +933,8 @@ function scoreLine(s) {
   return el("div", { class: "note" },
     el("strong", { text: `${s.score_id}: LR ${s.lr_text}` }),
     el("span", { text: ` (log10 ${s.log10_lr >= 0 ? "+" : ""}${s.log10_lr.toFixed(2)})${s.bounded ? ", held at a bound" : ""} · ${s.verbal}` }),
-    el("div", { class: "meta", text: `${s.questioned} against ${s.known.join(", ")} · release ${s.release_id} · ${s.created}` }));
+    el("div", { class: "meta", text: `${s.questioned} against ${s.known.join(", ")} · release ${s.release_id} · ${s.created}` }),
+    el("div", { class: "meta", text: `Hp: ${s.hp} Hd: ${s.hd}` }));
 }
 
 function scoreDialog() {
@@ -967,7 +968,7 @@ function scoreDialog() {
       el("p", { text: `Known crops (exactly ${k}):` }), el("div", { class: "group" }, ...boxes), go);
   }
   if (S.scores.length) parts.push(el("h3", { text: "Scores in this case" }), ...S.scores.map(scoreLine));
-  parts.push(el("p", { class: "muted small", text: "An LR of 100 means: the measures are 100 times more likely if the known writer wrote the signature (Hp) than if someone else did (Hd). It is not the chance that Hp is true. The examiner decides." }));
+  parts.push(el("p", { class: "muted small", text: "An LR of 100 means: the measures are 100 times more likely if Hp is true than if Hd is true, with Hp and Hd as each score states them. It is not the chance that Hp is true. The examiner decides." }));
   body.replaceChildren(...parts);
   if (!$("#dlgScore").open) $("#dlgScore").showModal();
 }

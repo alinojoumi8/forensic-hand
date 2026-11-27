@@ -207,7 +207,7 @@ def usable_items(manifest: Manifest, purpose: str) -> tuple[list[dict], dict]:
     for item in manifest.items:
         # A skilled forgery is the forger's own handwriting: the forger's consent must cover the use too.
         reason = problem(item.get("consent_id"), "")
-        if reason is None and item.get("forger_id"):
+        if reason is None and (item.get("kind") == "forgery-skilled" or item.get("forger_id")):
             reason = problem(item.get("forger_consent_id"), "forger ")
         if reason:
             excluded[reason] += 1

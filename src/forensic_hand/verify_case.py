@@ -63,6 +63,8 @@ MADE_FILES = {
     "release.added": ("release_id", "models", re.compile(r"^models/[0-9a-f]{64}\.json$")),
 }
 RELEASE_STAMPED = ("criteria.json", "dossier.json")
+# forensic-hand gives a case a score only when the checker in the case says this (Stage 4 or later).
+CHECKS_SCORES = True
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -524,6 +526,28 @@ def _check_release_stamps(label, bundle, problems, notes, unchecked, ca_file, op
         problems.append(f"release {label}: its test was time stamped before its pass marks")
 
 
+def _calibration_tie(bundle) -> str | None:
+    """The calibration that the scores use must be the calibration file inside the release, unchanged since it
+    was made, and the one that the stamped pass marks and the stamped test name. Returns a problem or None."""
+    calibration = bundle["calibration"]
+    try:
+        inside = json.loads(base64.b64decode(bundle["files"]["calibration.json"], validate=True).decode("utf-8"))
+        criteria = json.loads(base64.b64decode(bundle["files"]["criteria.json"], validate=True).decode("utf-8"))
+        dossier = json.loads(base64.b64decode(bundle["files"]["dossier.json"], validate=True).decode("utf-8"))
+        core = {k: v for k, v in calibration.items() if k not in ("created_claimed", "results_sha256")}
+        made = sha256_hex(json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        named = (criteria["calibration_sha256"], dossier["tasks"]["lr"]["calibration_sha256"])
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        return "the files inside the release file cannot be read"
+    if inside != calibration:
+        return "its calibration is not the calibration file inside it"
+    if made != calibration.get("results_sha256"):
+        return "its calibration was changed after it was made (the hash does not match)"
+    if any(name != made for name in named):
+        return "its stamped pass marks or its stamped test name another calibration"
+    return None
+
+
 def _check_scores(root, entries, problems, notes, unchecked, summary, ca_file, openssl, check_signature) -> None:
     """Each likelihood ratio must follow from its recorded raw score and its released calibration.
 
@@ -547,6 +571,10 @@ def _check_scores(root, entries, problems, notes, unchecked, summary, ca_file, o
                 ok = False
             if not ok:
                 problems.append(f"release {label}: the file is not a released calibration")
+                continue
+            tie = _calibration_tie(bundle)
+            if tie:
+                problems.append(f"release {label}: {tie}")
                 continue
             _check_release_stamps(label, bundle, problems, notes, unchecked, ca_file, openssl, check_signature)
             releases[data["sha256"]] = bundle

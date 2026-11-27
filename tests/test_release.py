@@ -291,6 +291,11 @@ def test_a_forger_without_a_valid_consent_is_counted_out(sets, tmp_path):
     del last_forgery["forger_consent_id"]
     _, excluded = usable_items(Manifest(data, sets["test_manifest"], "x" * 64), "publish")
     assert excluded.get("no forger consent record") == 1
+    # CodeRabbit review 13: a forgery with no forger id still needs a forger consent.
+    for item in data["items"]:
+        item.pop("forger_id", None)
+    _, excluded = usable_items(Manifest(data, sets["test_manifest"], "x" * 64), "publish")
+    assert excluded == {"forger consent withdrawn": 3, "no forger consent record": 1}
 
 
 def test_two_clean_items_may_not_share_a_sample_name(sets):

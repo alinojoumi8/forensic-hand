@@ -178,6 +178,56 @@ def test_the_report_shows_the_lr_its_propositions_and_its_limits(scored):
     assert "The examiner decides" in html and data["scores"][0]["score_id"] == "S1"
 
 
+def test_a_crop_file_changed_on_disk_is_refused_before_it_is_measured(tmp_path, released):
+    # CodeRabbit review 13: the score must measure the crop bytes that the ledger recorded.
+    case = _case(tmp_path)
+    rel = work.add_release(case, released["release"].read_bytes())
+    crop = case.state()["crops"][0]
+    path = case.path / crop["file"]
+    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    path.write_bytes((case.path / case.state()["crops"][1]["file"]).read_bytes())
+    with pytest.raises(CaseError, match="C1.*changed"):
+        work.run_score(case, "C1", ["C2", "C3", "C4"], rel["release_id"])
+
+
+def test_a_case_with_an_older_checker_cannot_take_a_release(tmp_path, released):
+    # CodeRabbit review 13: a checker from before Stage 4 cannot check scores, so the case may not get one.
+    case = _case(tmp_path)
+    checker = case.path / "verify_case.py"
+    checker.write_text(checker.read_text(encoding="utf-8").replace("CHECKS_SCORES = True", ""), encoding="utf-8")
+    with pytest.raises(CaseError, match="older checker"):
+        work.add_release(case, released["release"].read_bytes())
+
+
+def test_the_checker_ties_the_calibration_to_the_stamped_files_in_the_release(scored):
+    # CodeRabbit review 13: a release whose outer calibration was replaced must not pass the checker,
+    # even when the replacement has a matching hash and the ledger was rebuilt around it.
+    import base64
+    import hashlib
+
+    from forensic_hand.calibrate import _hash
+    from forensic_hand.store import store_bytes
+
+    case, rel, result = scored
+    bundle = json.loads((case.path / rel["file"]).read_text(encoding="utf-8"))
+    forged = {**bundle["calibration"], "model": {**bundle["calibration"]["model"], "b": 3.0, "upper": 3.0}}
+    forged["results_sha256"] = _hash(forged)
+    bundle["calibration"] = forged
+    raw = json.dumps(bundle).encode("utf-8")
+    stored = store_bytes(raw, case.path / "models", ".json")
+    case.ledger.append("release.added", {**rel, "release_id": "R2", "file": stored["file"], "sha256": stored["sha256"],
+                                         "size": stored["size"], "calibration_sha256": forged["results_sha256"]})
+    model = {k: forged["model"][k] for k in ("a", "b", "lower", "upper")}
+    lr = min(model["upper"], max(model["lower"], model["a"] * result["score"] + model["b"]))
+    case.ledger.append("score.computed", {**result, "score_id": "S2", "release_id": "R2",
+                                          "release_sha256": stored["sha256"], "calibration_sha256": forged["results_sha256"],
+                                          "model": model, "log10_lr": round(lr, 6)})
+    assert base64.b64decode(bundle["files"]["calibration.json"]) != json.dumps(forged).encode()
+    assert hashlib.sha256(raw).hexdigest() == stored["sha256"]
+    problems = vc.verify_case(case.path, check_tsa_signature=False)["problems"]
+    assert any("R2" in p and "calibration" in p for p in problems)
+
+
 # ---------------------------------------------------------------- refusals
 
 @pytest.fixture

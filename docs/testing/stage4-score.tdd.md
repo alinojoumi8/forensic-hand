@@ -173,6 +173,40 @@ signature check, OpenSSL refused the fake time stamp tokens ("there must be one 
 | 11 | `fhand score` works and refuses a calibration file | `test_the_score_command` |
 | 12 | The workbench shows the lock, refuses a score without a release, and scores with one | `test_the_workbench_shows_the_lock_and_computes_a_score` |
 
+### CodeRabbit review 13 (phase 4 and the review 12 fixes): 8 findings, 6 fixed, 2 not real
+
+| Finding | Result | Test (RED, then GREEN) |
+|---|---|---|
+| A forgery with no forger id skipped the forger consent | Fixed: every skilled forgery needs a forger consent when consent is required | `test_a_forger_without_a_valid_consent_is_counted_out` (RED: nothing left out) |
+| A case made before Stage 4 keeps a checker that cannot check scores | Fixed: no release or score unless the case checker says `CHECKS_SCORES = True` | `test_a_case_with_an_older_checker_cannot_take_a_release` (RED: did not raise) |
+| The dialog explained Hd with one fixed sentence | Fixed: each score shows its own Hp and Hd | seen in the workbench (app check below) |
+| The checker did not tie the outer calibration to the stamped files | Fixed: it must equal `calibration.json` inside, match its own hash, and be the one the stamped pass marks and test name | `test_the_checker_ties_the_calibration_to_the_stamped_files_in_the_release` (RED: accepted) |
+| The score used `bundle["calibration"]`, not the checked one | Not a hole (`check_release` refuses any difference), but now uses the checked calibration | existing tests |
+| A crop file changed on disk was measured | Fixed: `crop_image` refuses a file whose hash is not the ledger's (also for the copy check and charts) | `test_a_crop_file_changed_on_disk_is_refused_before_it_is_measured` (RED: did not raise) |
+| Do the pairs keep their source through calibration? | Not real: they are kept as 3 values; the phase 2 to 4 tests pass | - |
+| Can one page have crops in two unit systems? | Not real: a picture always uses pixels and a PDF always uses points | - |
+
+Whole suite after these fixes: all pass, 2 network tests skipped. Ruff: all checks passed.
+
+## Check in the real app (not a test)
+
+Scratch folder, synthetic data only, 2026-11-27.
+
+1. `fhand synth` (8 + 4 writers), `fhand calibrate` gave **status demo**: log10 LR kept between -0.28 and +0.44
+   (LR about 1/2 to 3: the bounds keep a small, weak data set from giving strong LRs).
+2. `fhand prereg` and `fhand stamp-file`: a **real DigiCert time stamp** (only the SHA-256 was sent); the
+   signature was checked by OpenSSL 3.5.6 against this computer's trust store.
+3. `fhand validate --purpose publish --calibration --criteria`: Cllr 0.94 (95% by writers 0.90 to 1.00);
+   every pass mark failed and the dossier says so.
+4. `fhand stamp-file` on the dossier (real DigiCert stamp, signature checked), then `fhand release`:
+   **refused** with 11 reasons (synthetic data, the test used synthetic data, and the 9 marks).
+5. `fhand intake` of 6 synthetic pages, then `fhand score --release cal.json`: refused, "not a released calibration".
+6. `fhand serve`: the Score button shows **Locked** with the reason; no script errors in the browser console.
+7. Unlocked view, TEST ONLY: inside one Python process, a release built on synthetic data marked as real,
+   with fake time stamps and the signature check patched (as in the tests). The dialog refused 2 known crops
+   ("Choose exactly 5"), then gave S1: LR 1.4 (log10 +0.15), weak support for Hp. Report section 7 showed
+   the crops, Hp, Hd, the LR, the verbal scale and the limits. Outside that process, this release is refused.
+
 Known flaky test, not caused by Stage 4: `tests/test_server.py::test_a_large_body_is_refused` failed twice in
 full runs with a Windows `ConnectionAbortedError` (the server answers 413 before the client has sent the
 300 kB body). It passed 6 times out of 6 on its own.

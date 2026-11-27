@@ -105,7 +105,15 @@ def add_crop(case, evidence_id, page, box, label=None, dpi=None) -> dict:
 
 
 def crop_image(case, crop: dict) -> Image.Image:
-    with Image.open(case.path / crop["file"]) as img:
+    """The picture of a crop, only if its file still has the hash that the ledger recorded."""
+    try:
+        data = (case.path / crop["file"]).read_bytes()
+    except OSError as exc:
+        raise CaseError(f"crop {crop['crop_id']}: its file cannot be read: {exc}") from exc
+    if hashlib.sha256(data).hexdigest() != crop["sha256"]:
+        raise CaseError(f"crop {crop['crop_id']}: its file was changed (its hash does not match the ledger). "
+                        "Run: fhand verify <case>")
+    with Image.open(io.BytesIO(data)) as img:
         img.load()
         return img.copy()
 
@@ -341,8 +349,20 @@ def _checked_release(raw: bytes) -> tuple[dict, dict]:
     return bundle, facts
 
 
+def _checker_checks_scores(case) -> bool:
+    """Does the checker in the case folder (copied when the case was made) know how to check scores?"""
+    try:
+        text = (case.path / "verify_case.py").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "\nCHECKS_SCORES = True\n" in text
+
+
 def add_release(case, raw: bytes) -> dict:
     """Check a release file and keep it in the case (models/, read-only, in the ledger and the next seal)."""
+    if not _checker_checks_scores(case):
+        raise CaseError("this case was made with an older checker (verify_case.py) that cannot check scores, so the "
+                        "other side could not check one. Make a new case with this version to use a score")
     bundle, facts = _checked_release(raw)
     sha = hashlib.sha256(raw).hexdigest()
     with case.ledger.lock():
@@ -414,8 +434,10 @@ def run_score(case, questioned, known, release_id=None, config: dict | None = No
     raw = (case.path / rel["file"]).read_bytes()
     if hashlib.sha256(raw).hexdigest() != rel["sha256"]:
         raise CaseError(f"the release file of {rel['release_id']} was changed in the case folder")
-    bundle, facts = _checked_release(raw)
-    calibration = bundle["calibration"]
+    if not _checker_checks_scores(case):
+        raise CaseError("the checker in this case (verify_case.py) cannot check scores; make a new case to use one")
+    _, facts = _checked_release(raw)
+    calibration = facts["calibration"]          # the calibration checked from the files inside the release
     try:
         calibrate.check_settings(calibration, cfg)
     except calibrate.CalibrationError as exc:
