@@ -5,16 +5,23 @@ The signatures here are synthetic. They prove the logic, not error rates on real
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from forensic_hand import synth, writer
 from forensic_hand.config import DEFAULTS
 from forensic_hand.datasets import load_manifest
-from forensic_hand.validation import dossier_html, run_validation, writer_score_task
+from forensic_hand.validation import (
+    _copy_pairs,
+    dossier_html,
+    run_validation,
+    score_comparisons,
+    writer_score_task,
+)
 
 
 def _writer(seed: int, genuine: int = 6, forged: int = 2, pen: str = "black"):
@@ -63,6 +70,18 @@ def test_features_do_not_depend_on_the_scan_resolution():
             assert writer.distance(kind, a, b) < 0.12, name
     assert abs(low["groups"]["slant"] - high["groups"]["slant"]) < 3.0
     assert abs(low["groups"]["stroke_width"] - high["groups"]["stroke_width"]) < 0.25
+
+
+def test_a_small_loop_is_measured_the_same_at_twice_the_resolution():
+    # CodeRabbit review 10: a fixed 40-pixel minimum in the line removal kept the top and bottom of
+    # this loop at 1x and removed them at 2x. All line-removal lengths are now relative to the crop.
+    img = Image.new("L", (100, 100), 250)
+    ImageDraw.Draw(img).rectangle([35, 40, 64, 59], outline=20, width=2)
+    big = img.resize((200, 200), Image.NEAREST)
+    small, large = _features(img), _features(big)
+    assert small["facts"]["parts"] == large["facts"]["parts"]
+    assert small["facts"]["loops"] == large["facts"]["loops"]
+    assert writer.distance("histogram", small["groups"]["layout"], large["groups"]["layout"]) < 0.05
 
 
 def test_a_stamp_of_another_colour_is_removed_before_the_features():
@@ -166,6 +185,25 @@ def test_the_writer_score_is_skipped_with_a_reason_when_writers_have_too_few_sig
     manifest = load_manifest(writer_set)
     task = writer_score_task([(manifest, manifest.items)], DEFAULTS)     # 4 genuine; 5 known + 1 are needed
     assert "6 or more genuine" in task["skipped"]
+
+
+def test_clean_items_may_carry_a_sample_name_that_differs_from_their_id(writer_set, tmp_path):
+    # CodeRabbit review 10: a clean original was looked up by its sample name, not by its id.
+    data = json.loads(writer_set.read_text(encoding="utf-8"))
+    for item in data["items"]:
+        if item["stratum"] == "clean":
+            item["sample"] = f"s-{item['item_id']}"
+    renamed = writer_set.with_name("manifest-renamed.json")
+    renamed.write_text(json.dumps(data), encoding="utf-8")
+    cfg = {**DEFAULTS, "score_min_known": 3}
+    original, other = load_manifest(writer_set), load_manifest(renamed)
+    a = score_comparisons([(original, original.items)], cfg)
+    b = score_comparisons([(other, other.items)], cfg)
+    assert {s: {k: len(v) for k, v in row.items()} for s, row in a.items()} == \
+           {s: {k: len(v) for k, v in row.items()} for s, row in b.items()}
+    pairs_a, pairs_b = _copy_pairs(original.items), _copy_pairs(other.items)
+    assert {s: {k: len(v) for k, v in row.items()} for s, row in pairs_a.items()} == \
+           {s: {k: len(v) for k, v in row.items()} for s, row in pairs_b.items()}
 
 
 def test_the_dossier_explains_that_the_writer_score_is_raw(writer_dossier):

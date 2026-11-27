@@ -159,7 +159,7 @@ def components(mask: np.ndarray, eight: bool = True) -> list[tuple[int, bool]]:
 def features(img: Image.Image, cfg: dict) -> dict | None:
     """The measures of one signature crop. None when the crop has no clear ink."""
     cut = clones.ink_weight(img, cfg["clone_min_ink_fraction"], separate=cfg["clone_ink_separation"],
-                            hue_deg=cfg["clone_ink_hue_deg"])
+                            hue_deg=cfg["clone_ink_hue_deg"], fixed_minimum=False)
     if cut is None:
         return None
     dark, separation = cut
