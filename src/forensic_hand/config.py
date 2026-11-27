@@ -37,7 +37,9 @@ DEFAULTS = {
     # lines only: copies (resized, turned up to 3 degrees, JPEG, pasted on a printed line) scored
     # 0.975 or more; natural variation 0.79 or less (0.91 for an unusually steady hand).
     "clone_radius_px": 160,
-    "clone_blur_px": 1.5,
+    # 3.0 (was 1.5): chosen on synthetic seed 1, checked on seed 2 (see docs/testing). It makes the
+    # check more tolerant of blurred and recompressed copies; false alarms stayed at 0.
+    "clone_blur_px": 3.0,
     "clone_rotations_deg": [-3, -2, -1, 0, 1, 2, 3],
     "clone_notice_at": 0.90,
     "clone_warning_at": 0.95,

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from . import __version__, tsa, verify_case
 from .case import Case, CaseError
 from .checks import run_checks
+from .datasets import USES, DatasetError
 from .export import ExportError, export_case
 from .findings import count_levels
 from .ledger import LedgerError
@@ -123,6 +125,66 @@ def cmd_export(args) -> int:
     _say(f"Bundle: {done['path']}")
     _say(f"Files:  {done['files']}")
     _say(f"sha256: {done['sha256']}")
+    return 0
+
+
+def cmd_synth(args) -> int:
+    from .synth import STRATA, generate_dataset
+
+    manifest = generate_dataset(args.out, writers=args.writers, genuine=args.genuine, forgeries=args.forgeries,
+                                seed=args.seed, dpi=args.dpi, strata=STRATA)
+    _say(f"Synthetic dataset: {args.out}")
+    _say(f"Items: {len(manifest['items'])} from {args.writers} writer(s), seed {args.seed}")
+    _say("These are generated signatures. They show how a method behaves, not real error rates.")
+    return 0
+
+
+def cmd_dataset_verify(args) -> int:
+    from .datasets import load_manifest, verify
+
+    manifest = load_manifest(args.manifest)
+    problems = verify(manifest)
+    data = manifest.data
+    _say(f"Dataset: {data['title']}{' (synthetic)' if data['synthetic'] else ''}")
+    _say(f"Licence: {data['license']['class']}: {data['license']['name']}")
+    _say(f"Items:   {len(manifest.items)} from {len({i['writer_id'] for i in manifest.items})} writer(s)")
+    _say(f"Consent: {'required, ' + str(len(data['consent']['records'])) + ' record(s)' if data['consent']['required'] else 'not required'}")
+    for problem in problems:
+        _say(f"PROBLEM: {problem}")
+    _say("RESULT: OK" if not problems else "RESULT: PROBLEMS FOUND")
+    return 0 if not problems else 1
+
+
+def cmd_dataset_build(args) -> int:
+    from .datasets import build_from_csv
+
+    out = args.out or str(Path(args.folder) / "manifest.json")
+    if Path(out).exists():
+        raise DatasetError(f"the file exists already; choose a new name: {out}")
+    manifest = build_from_csv(args.folder, args.csv, title=args.title, license_class=args.license_class,
+                              license_name=args.license_name, consent_csv=args.consent, out=out,
+                              license_url=args.license_url)
+    _say(f"Manifest: {out}")
+    _say(f"Items:    {len(manifest['items'])}")
+    return 0
+
+
+def cmd_validate(args) -> int:
+    from .validation import run_validation, write_dossier
+
+    if (Path(args.out) / "dossier.json").exists():
+        raise DatasetError(f"a dossier exists already in {args.out}; choose a new folder")
+    dossier = run_validation(args.manifests, purpose=args.purpose, blur_samples=args.blur_samples,
+                             jpeg_samples=args.jpeg_samples)
+    path = write_dossier(dossier, args.out)
+    copy = dossier["tasks"]["copy-check"]["all"]
+    same = copy["negatives"]["same-writer"]["warning"]
+    _say(f"Copy check, all strata: copies flagged {copy['positives']['warning']['rate']}, "
+         f"same-writer false alarms {same['rate']} ({same['k']}/{same['n']})")
+    _say(f"Results hash: {dossier['results_sha256']}")
+    _say(f"Dossier: {path}")
+    if any(d["synthetic"] for d in dossier["datasets"]):
+        _say("Synthetic data only: not error rates on real casework.")
     return 0
 
 
@@ -243,6 +305,39 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=0, help="port number (default: a free port)")
     p.add_argument("--no-browser", action="store_true", help="print the address but do not open a browser")
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("synth", help="make a labelled synthetic signature dataset for validation")
+    p.add_argument("out", help="new, empty folder")
+    p.add_argument("--writers", type=int, default=12)
+    p.add_argument("--genuine", type=int, default=4, help="genuine signatures per writer")
+    p.add_argument("--forgeries", type=int, default=2, help="skilled forgeries per writer")
+    p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--dpi", type=int, default=300)
+    p.set_defaults(func=cmd_synth)
+
+    p = sub.add_parser("dataset", help="check or build a dataset manifest")
+    dsub = p.add_subparsers(dest="dataset_command", metavar="command")
+    q = dsub.add_parser("verify", help="check every file of a dataset against its manifest")
+    q.add_argument("manifest")
+    q.set_defaults(func=cmd_dataset_verify)
+    q = dsub.add_parser("build", help="make a manifest for a real collection from a CSV file")
+    q.add_argument("folder", help="the folder that holds the scans")
+    q.add_argument("--csv", required=True, help="items CSV: file, writer_id, kind, stratum, consent_id, capture")
+    q.add_argument("--title", required=True)
+    q.add_argument("--license-class", required=True, choices=["own", "commercial", "research-only", "unknown"])
+    q.add_argument("--license-name", required=True)
+    q.add_argument("--license-url")
+    q.add_argument("--consent", help="consent CSV: consent_id, scopes (a;b), date, withdrawn")
+    q.add_argument("--out", help="manifest file (default: manifest.json in the folder)")
+    q.set_defaults(func=cmd_dataset_build)
+
+    p = sub.add_parser("validate", help="measure the screens on labelled data and write a dossier")
+    p.add_argument("manifests", nargs="+", metavar="MANIFEST")
+    p.add_argument("--out", required=True, help="new folder for dossier.html and dossier.json")
+    p.add_argument("--purpose", default="benchmark", choices=list(USES))
+    p.add_argument("--blur-samples", type=int, default=12)
+    p.add_argument("--jpeg-samples", type=int, default=12)
+    p.set_defaults(func=cmd_validate)
     return parser
 
 
@@ -257,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args)
-    except (CaseError, ExportError, LedgerError) as exc:
+    except (CaseError, ExportError, LedgerError, DatasetError) as exc:
         _error(str(exc))
         return 2
     except SealError as exc:

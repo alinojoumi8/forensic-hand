@@ -155,28 +155,23 @@ def _place(arr: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
     return out
 
 
-def _best_shift(a: np.ndarray, b: np.ndarray) -> tuple[int, int]:
-    """Shift of b that best matches a, by plain cross-correlation (computed with FFT).
-
-    Phase-only correlation was tried first: it locks onto wrong shifts when thin pen lines are
-    turned even one degree, so it is not used.
-    """
-    fa, fb = np.fft.rfft2(a - a.mean()), np.fft.rfft2(b - b.mean())
-    peak = np.fft.irfft2(fa * np.conj(fb), s=a.shape)
-    dy, dx = np.unravel_index(int(np.argmax(peak)), peak.shape)
-    H, W = a.shape
-    return (dy - H if dy > H // 2 else dy), (dx - W if dx > W // 2 else dx)
-
-
-def _pearson(a: np.ndarray, b: np.ndarray) -> float:
-    a = a - a.mean()
-    b = b - b.mean()
-    denom = np.sqrt((a * a).sum() * (b * b).sum())
-    return float((a * b).sum() / denom) if denom > 0 else 0.0
+def _turned(prep: dict, degrees: float) -> np.ndarray:
+    """The ink turned by a small angle. Kept in the prepared item, because each item is compared many times."""
+    cache = prep.setdefault("_turned", {})
+    if degrees not in cache:
+        cache[degrees] = prep["ink"] if degrees == 0 else np.asarray(
+            Image.fromarray(prep["ink"].astype(np.float32), mode="F").rotate(degrees, resample=Image.BILINEAR,
+                                                                           expand=True), dtype=np.float64)
+    return cache[degrees]
 
 
 def compare(prep_a: dict, prep_b: dict, rotations, max_aspect_diff: float) -> dict:
-    """Best match of b onto a. Score 1.0 means the same ink, point for point."""
+    """Best match of b onto a. Score 1.0 means the same ink, point for point.
+
+    For each small turn of b: the best shift by plain cross-correlation (computed with FFT), then the
+    Pearson correlation at that shift. Phase-only correlation was tried first: it locks onto wrong
+    shifts when thin pen lines are turned even one degree, so it is not used.
+    """
     # Symmetric (the order of the crops does not matter) and rotation-safe (principal axes).
     low, high = sorted((prep_a["elongation"], prep_b["elongation"]))
     if high / low - 1 > max_aspect_diff:
@@ -184,15 +179,20 @@ def compare(prep_a: dict, prep_b: dict, rotations, max_aspect_diff: float) -> di
     a, b = prep_a["ink"], prep_b["ink"]
     pad = max(a.shape[0], b.shape[0]) // 4
     shape = (max(a.shape[0], b.shape[0]) + 2 * pad, max(a.shape[1], b.shape[1]) + 2 * pad)
+    H, W = shape
     base = _place(a, shape)
+    base_c = base - base.mean()
+    base_norm = float((base_c * base_c).sum())
+    base_fft = np.fft.rfft2(base_c)
     best = {"score": -1.0}
     for degrees in rotations:
-        turned = b if degrees == 0 else np.asarray(
-            Image.fromarray(b.astype(np.float32), mode="F").rotate(degrees, resample=Image.BILINEAR, expand=True),
-            dtype=np.float64)
-        moving = _place(turned, shape)
-        dy, dx = _best_shift(base, moving)
-        score = _pearson(base, np.roll(moving, (dy, dx), axis=(0, 1)))
+        moving = _place(_turned(prep_b, degrees), shape)
+        moving_c = moving - moving.mean()
+        peak = np.fft.irfft2(base_fft * np.conj(np.fft.rfft2(moving_c)), s=shape)
+        dy, dx = np.unravel_index(int(np.argmax(peak)), shape)
+        dy, dx = (dy - H if dy > H // 2 else dy), (dx - W if dx > W // 2 else dx)
+        denom = np.sqrt(base_norm * float((moving_c * moving_c).sum()))
+        score = float((base_c * np.roll(moving_c, (dy, dx), axis=(0, 1))).sum() / denom) if denom > 0 else 0.0
         if score > best["score"]:
             best = {"score": score, "rotation_deg": degrees, "shift_px": [int(dx), int(dy)]}
     best["score"] = round(best["score"], 4)

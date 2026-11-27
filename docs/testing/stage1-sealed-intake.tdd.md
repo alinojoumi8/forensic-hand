@@ -186,3 +186,46 @@ Result: 259 passed (including the 2 network tests), ruff clean, JavaScript synta
 ## CodeRabbit review 6 (2026-11-26)
 
 Command: `coderabbit review --committed --base-commit 547bbc8 --agent` (the review-5 fixes only). 0 findings.
+
+## Stage 3: validation data and harness (2026-11-27)
+
+Branch `feat/stage3-validation`. New: Sigma-Lognormal signature synthesizer (`synth.py`), dataset
+manifests with licence gate and consent filter (`datasets.py`), error-rate math (`metrics.py`),
+validation harness and dossier (`validation.py`), commands `synth`, `dataset verify`, `dataset build`,
+`validate`, and the collection guide and draft consent form in `docs/validation/`.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_synth.py tests/test_datasets.py tests/test_validation.py` before the code | 3 collection errors: modules not found |
+| GREEN | `pytest` | 311 passed, 2 skipped (network tests off) |
+
+### First measured results (synthetic data only, not real error rates)
+
+Dataset: 12 writers, 4 genuine and 2 skilled forgeries each, 6 conditions, 720 items. Rates at the
+warning level (score 0.95). Tuned on seed 1; the table is the held-out seed 2.
+
+| Condition | Copies caught, old setting (blur 1.5) | Copies caught, new setting (blur 3.0) | False alarms (both) |
+|---|---|---|---|
+| clean | 77% | 81% (95% CI 68 to 90) | 0 |
+| ruled line | 71% | 79% | 0 |
+| stamp | 21% | 21% | 0 |
+| blur | 44% | 58% | 0 |
+| JPEG | 73% | 81% | 0 |
+| 150 DPI | 75% | 79% | 0 |
+| all | 60% | 67% (95% CI 61 to 72) | 0 of 1,728 negative pairs (same writer: 95% CI 0 to 0.44%) |
+
+What the run taught:
+
+1. **A stamp over the signature defeats the copy check.** In grey, a red or blue stamp can be as dark
+   as pen ink, so a grey-level fix would only flatter the synthetic data. Colour separation is needed.
+   The dossier and the README state this limit.
+2. Blurred and recompressed copies were missed. A stronger comparison blur (3.0) helped on held-out
+   data in every condition but stamps, with no false alarm. The clean-copy rate fell from 92% on the
+   tuning seed to 81% on the held-out seed: the held-out number is the honest one.
+3. A writer whose signature has long faint tapered ends lost them in copies; the shape gate then
+   refused the pair. A looser gate did not raise the catch rate, so the gate is unchanged.
+4. The blur screen warns from about 3 px of blur; at 2.25 px it gives a note. The JPEG quality
+   estimate was exact for Pillow-made files (quality 30 to 90).
+
+The synthesizer was also checked by eye: forgeries are slower (mean speed lower in every case) and
+less smooth (log dimensionless jerk higher on average for 12 of 12 writers), with blunt ends.

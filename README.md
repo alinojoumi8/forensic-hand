@@ -60,6 +60,29 @@ listed in the next seal. The checker tests them like the evidence files.
 Safety: the workbench listens on 127.0.0.1 only and needs the one-time key in the address that it prints.
 Do not share that address. Press Ctrl+C in its window to stop it.
 
+## Validation (Stage 3)
+
+A screen is only useful when its error rates are known. Stage 3 measures them.
+
+```powershell
+.\.venv\Scripts\fhand.exe synth data\synth-s1 --writers 12 --seed 1
+```
+
+```powershell
+.\.venv\Scripts\fhand.exe validate data\synth-s1\manifest.json --out data\validation-s1
+```
+
+- `synth` makes labelled signatures with the Sigma-Lognormal model of pen movement: genuine
+  signatures, skilled forgeries (slower, shaky, blunt ends) and digital copies, each in six
+  conditions (clean, ruled line, stamp, blur, JPEG, 150 DPI).
+- `validate` runs the copy check, the blur screen and the JPEG estimate on that data, and writes
+  `dossier.html` and `dossier.json`: rates with 95% intervals, AUC, EER, the data hashes, the
+  settings and a results hash. The same data and settings give the same results hash.
+- Every dataset has a manifest with file hashes, a licence class and optional consent records.
+  Research-only data may be used for internal benchmarks only; unknown licences are refused.
+- **Synthetic results are not error rates on real casework.** The dossier says so. To collect real,
+  consented data, see `docs/validation/collection-protocol.md`.
+
 ## Commands
 
 | Command | What it does |
@@ -75,6 +98,10 @@ Do not share that address. Press Ctrl+C in its window to stop it.
 | `fhand verify CASE` | Check that nothing changed |
 | `fhand export CASE out.zip` | Pack the case for another party |
 | `fhand serve CASE` | Open the workbench in your browser (this computer only) |
+| `fhand synth OUT [--writers N --seed S]` | Make a labelled synthetic dataset |
+| `fhand dataset verify MANIFEST` | Check every file of a dataset against its manifest |
+| `fhand dataset build FOLDER --csv items.csv ...` | Make a manifest for a real collection |
+| `fhand validate MANIFEST --out FOLDER` | Measure the screens and write a validation dossier |
 
 ## Check a case
 
