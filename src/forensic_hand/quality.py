@@ -13,6 +13,7 @@ from PIL import Image
 
 from .config import DEFAULTS
 from .findings import finding
+from .imaging import to_8bit
 
 # Standard JPEG luminance table (ITU T.81, Annex K). Used to estimate the quality setting.
 _STD_LUMA = (
@@ -149,7 +150,7 @@ def analyse_image(img: Image.Image, config: dict | None = None) -> dict:
         out.append(finding("IMG-DPI-BELOW-300", "notice", "The resolution is below 300 DPI.",
                            detail=f"{min(dpi)} DPI.", limits=_L_DPI, dpi=min(dpi)))
 
-    gray = np.asarray(img.convert("L"))
+    gray = np.asarray(to_8bit(img).convert("L"))       # a 16-bit scan keeps its ink
     sharp = edge_sharpness(gray, cfg["sharpness_tile_px"], cfg["sharpness_min_contrast"])
     metrics["sharpness"] = sharp["score"]
     metrics["sharpness_tiles_used"] = sharp["tiles_used"]

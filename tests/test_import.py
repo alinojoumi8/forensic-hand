@@ -115,6 +115,44 @@ def test_sixteen_bit_and_one_bit_scans_keep_their_ink():
         assert writer.features(picture, DEFAULTS) is not None
 
 
+def test_a_transparent_value_in_a_16_bit_picture_becomes_paper():
+    # CodeRabbit review 15: the transparency key of a 16-bit picture was lost.
+    values = np.full((8, 8), 30000, np.uint16)
+    values[:, :4] = 0
+    img = Image.fromarray(values)
+    img.info["transparency"] = 0
+    out = np.asarray(on_white(img).convert("L"))
+    assert out[:, :4].min() == 255 and out[:, 4:].max() < 200
+
+
+def test_two_paths_that_clean_to_the_same_id_get_valid_ids(tmp_path):
+    # CodeRabbit review 15: the "~2" suffix was not a valid item id, so the import failed.
+    _png(tmp_path / "a+b" / "original_1_1.png")
+    _png(tmp_path / "a-b" / "original_1_1.png")
+    dry = build_from_names(tmp_path, preset="cedar", title="t", license_class="research-only", license_name="x",
+                           dry_run=True)
+    manifest = build_from_names(tmp_path, preset="cedar", title="t", license_class="research-only", license_name="x")
+    for items in (dry["items"], manifest["items"]):
+        ids = [i["item_id"] for i in items]
+        assert len(set(ids)) == 2 and all("~" not in i for i in ids)
+
+
+def test_the_blur_and_jpeg_tasks_see_the_ink_of_16_bit_scans(tmp_path):
+    # CodeRabbit review 15: those tasks turned 16-bit scans white before they measured them.
+    for w in (1, 2):
+        for n in (1, 2):
+            gray = np.asarray(Image.open(_png(tmp_path / "tmp.png", seed=10 * w + n)).convert("L"), dtype=np.uint16)
+            Image.fromarray(gray * 257).save(tmp_path / f"original_{w}_{n}.png")
+    (tmp_path / "tmp.png").unlink()
+    build_from_names(tmp_path, preset="cedar", title="16-bit", license_class="research-only", license_name="x",
+                     out=tmp_path / "manifest.json")
+    tasks = run_validation([tmp_path / "manifest.json"], purpose="benchmark", tasks=["blur-screen", "jpeg-estimate"],
+                           blur_samples=2, jpeg_samples=2)["tasks"]
+    clean = tasks["blur-screen"]["rows"][0]
+    assert clean["sigma_px"] == 0 and clean["mean_sharpness"] is not None and clean["warning"]["rate"] == 0
+    assert all(row["mean_abs_error"] is not None for row in tasks["jpeg-estimate"]["rows"])
+
+
 # ---------------------------------------------------------------- research-only data in use
 
 @pytest.fixture(scope="module")

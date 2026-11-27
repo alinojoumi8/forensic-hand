@@ -341,7 +341,7 @@ def scan_names(folder, pattern: str, genuine, forgery) -> tuple[list[dict], dict
         base, n = item_id, 1
         while item_id in used_ids:
             n += 1
-            item_id = f"{base}~{n}"
+            item_id = f"{base}-{n}"          # "-" is allowed in an item id (see _ID)
         used_ids.add(item_id)
         item = {"item_id": item_id, "file": _safe_file(rel), "writer_id": writer, "kind": kind, "stratum": "clean",
                 "capture": "scan", "dpi": _image_dpi(path)}

@@ -237,6 +237,17 @@ research-only set away from calibration and publication.
 
 The presets follow the usual file names of these sets. Check them against your copy with `--dry-run`.
 
+### CodeRabbit review 15 (the importer): 4 findings, all fixed
+
+| Finding | Fix | Test (RED, then GREEN) |
+|---|---|---|
+| A 16-bit picture lost its transparent value | `imaging.to_8bit` makes that value white paper | `test_a_transparent_value_in_a_16_bit_picture_becomes_paper` (RED: 0, not 255) |
+| Two paths that clean to one id got a "~2" suffix, which is not a valid id | The suffix is "-2" | `test_two_paths_that_clean_to_the_same_id_get_valid_ids` (RED: bad item id) |
+| The README skipped the real import after the dry run | The import command is added | - |
+| The blur and JPEG tasks still turned 16-bit scans white | One helper, `to_8bit`, used by validation, the quality screen and the PDF picture check | `test_the_blur_and_jpeg_tasks_see_the_ink_of_16_bit_scans` (RED: no sharpness) |
+
+Whole suite after these fixes: all pass, 2 network tests skipped. Ruff: all checks passed.
+
 Known flaky test, not caused by Stage 4: `tests/test_server.py::test_a_large_body_is_refused` failed twice in
 full runs with a Windows `ConnectionAbortedError` (the server answers 413 before the client has sent the
 300 kB body). It passed 6 times out of 6 on its own.

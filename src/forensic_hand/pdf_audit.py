@@ -18,6 +18,7 @@ import pikepdf
 
 from .config import DEFAULTS
 from .findings import finding
+from .imaging import to_8bit
 from .quality import edge_sharpness, sharpness_findings
 from .verify_case import sha256_hex
 
@@ -701,7 +702,7 @@ def _image_sharpness(xobj, cfg: dict):
         import numpy as np
 
         image = pikepdf.PdfImage(xobj).as_pil_image()
-        gray = np.asarray(image.convert("L"))
+        gray = np.asarray(to_8bit(image).convert("L"))       # a 16-bit picture keeps its ink
         return edge_sharpness(gray, cfg["sharpness_tile_px"], cfg["sharpness_min_contrast"])["score"]
     except Exception:  # noqa: BLE001 - some image codecs are not supported; that is not a finding
         return False

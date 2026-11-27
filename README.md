@@ -140,8 +140,16 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
   benchmarks only. It refuses to calibrate a score or publish results with them. Check the names first with
   `--dry-run`; for other layouts give `--pattern` with the named groups `writer` and `kind`.
 
+  First look at what matches (this writes nothing):
+
 ```powershell
 .\.venv\Scripts\fhand.exe dataset import D:\data\cedar --preset cedar --title "CEDAR" --license-class research-only --license-name "CEDAR: non-commercial research only" --dry-run
+```
+
+  Then make the manifest, and run the benchmark:
+
+```powershell
+.\.venv\Scripts\fhand.exe dataset import D:\data\cedar --preset cedar --title "CEDAR" --license-class research-only --license-name "CEDAR: non-commercial research only"
 ```
 
 ```powershell

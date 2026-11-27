@@ -28,6 +28,7 @@ from . import TOOL_NAME, __version__, clones, metrics, writer
 from .checks import environment
 from .config import DEFAULTS
 from .datasets import DatasetError, load_manifest, require_use, usable_items, verify
+from .imaging import to_8bit
 from .ledger import utc_now
 from .quality import analyse_image
 
@@ -60,9 +61,10 @@ def _rate(scores, threshold) -> dict:
 
 
 def _open(manifest, item) -> Image.Image:
+    """The picture of a dataset item; a 16-bit grey scan comes back as 8-bit grey, so its ink stays."""
     with Image.open(manifest.folder / item["file"]) as img:
         img.load()
-        return img.copy()
+        return to_8bit(img.copy())
 
 
 def origins(items: list[dict]) -> dict[str, str]:
