@@ -913,6 +913,8 @@ function clonesDialog(result) {
     el("p", { class: "muted", text: `${result.crops.length} crop(s) compared. ${result.settings.status}` }),
     ...(result.findings.length ? result.findings.map(findingNode) : [el("p", { text: "No pair matches point for point." })]),
     result.skipped.length ? el("p", { class: "muted", text: `Skipped (no clear ink): ${result.skipped.join(", ")}` }) : null,
+    ...Object.entries(result.ink_separation || {}).map(([id, s]) => el("p", { class: "muted",
+      text: `${id}: a second ink was removed before comparing (kept colour rgb(${s.kept_rgb.join(", ")}), removed rgb(${s.removed_rgb.join(", ")})). Check that the kept colour is the pen.` })),
     pairs.length ? el("table", { class: "pairs" },
       el("tr", {}, el("th", { text: "Crop" }), el("th", { text: "Crop" }), el("th", { text: "Match score" })),
       ...pairs.map((p) => el("tr", {}, el("td", { text: name(p.a) }), el("td", { text: name(p.b) }),

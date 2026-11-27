@@ -37,8 +37,9 @@ LIMITS = [
      "different problem and is not measured here."),
     ("The results hold for the data and settings listed in this file only. Other scanners, pens, papers "
      "and crop habits can give other numbers."),
-    ("A stamp over the signature defeats the copy check (few copies are caught). Separating stamp ink "
-     "by colour is not built yet. Crop away stamps, or treat the check as not done."),
+    ("A stamp over the signature is removed only when its colour differs in hue from the pen (or one of them "
+     "is black). A stamp in the pen's own colour, or a near hue such as violet over blue, still defeats the "
+     "copy check. The hue rule (15 degrees) comes from synthetic inks; real scanners may need another value."),
     "No match score for writer identity exists in this version. Nothing here measures who wrote a signature.",
 ]
 
@@ -121,7 +122,8 @@ def copy_check_task(sets, cfg: dict) -> dict:
         key = item["sha256"]
         if key not in features:
             features[key] = clones.prepare(_open(manifest, item), cfg["clone_radius_px"],
-                                           cfg["clone_min_ink_fraction"], cfg["clone_blur_px"])
+                                           cfg["clone_min_ink_fraction"], cfg["clone_blur_px"],
+                                           separate=cfg["clone_ink_separation"], hue_deg=cfg["clone_ink_hue_deg"])
         return features[key]
 
     per_stratum: dict[str, dict] = {}

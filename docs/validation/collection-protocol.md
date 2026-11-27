@@ -39,7 +39,9 @@ and reports the count. Old dossiers keep the manifest hash that they used.
 | Disguised signatures | 3 | The writer tries to make their own signature look different. Label `disguised`. |
 | Skilled forgeries of this writer | 5 to 10 | By 2 or more forgers. Label `forgery-skilled`. |
 
-Use more than one pen type (ballpoint, gel, felt-tip). Record the pen in a note column.
+Use more than one pen type (ballpoint, gel, felt-tip) and colour (black, blue). Record the pen in a note
+column. Include sheets with real stamps (red, blue, violet, black) over some signatures: the copy check
+separates inks by colour, and its hue rule was set on synthetic inks only.
 
 ## 4. Capture
 

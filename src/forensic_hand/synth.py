@@ -24,8 +24,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-GENERATOR_VERSION = 1
-STRATA = ("clean", "ruled", "stamp", "blur", "jpeg", "dpi150")
+GENERATOR_VERSION = 2   # 2: colour pictures (pen and stamp colours)
+STRATA = ("clean", "ruled", "stamp", "blur", "jpeg", "dpi150", "stamp-same")
+PAPER_RGB = (250, 250, 247)
+PEN_RGB = {"black": (18, 18, 24), "blue": (28, 42, 125)}
+STAMP_COLORS = {"red": (200, 40, 50), "blue": (40, 70, 180), "violet": (115, 50, 155), "black": (45, 45, 50)}
+# A stamp in another colour than the pen (the usual case), and one in the pen's own colour (the hard case).
+STAMP_CONTRAST = {"black": ("red", "blue", "violet"), "blue": ("red", "violet", "black")}
 RATE = 200.0            # samples per second
 MARGIN_MM = 3.0
 SUPERSAMPLE = 3
@@ -216,8 +221,8 @@ def execution_stats(sample: Sample, rate: float = RATE) -> dict:
 
 # ---------------------------------------------------------------- pictures
 
-def render(sample: Sample, dpi: int = 300, rng: np.random.Generator | None = None) -> Image.Image:
-    """Draw the pen path as ink on paper. Slow pen: wider, darker line. Genuine ends taper."""
+def render(sample: Sample, dpi: int = 300, rng: np.random.Generator | None = None, pen: str = "black") -> Image.Image:
+    """Draw the pen path as ink on paper (RGB). Slow pen: wider, darker line. Genuine ends taper."""
     parts = sample_points(sample)
     allxy = np.concatenate([xy for xy, _ in parts])
     (minx, miny), (maxx, maxy) = allxy.min(axis=0), allxy.max(axis=0)
@@ -244,10 +249,14 @@ def render(sample: Sample, dpi: int = 300, rng: np.random.Generator | None = Non
             draw.line([(px[i], py[i]), (px[i + 1], py[i + 1])], fill=fill, width=max(1, round(w[i])))
             draw.ellipse([px[i] - r, py[i] - r, px[i] + r, py[i] + r], fill=fill)
     img = canvas.resize((max(1, round(width / SUPERSAMPLE)), max(1, round(height / SUPERSAMPLE))), Image.LANCZOS)
+    gray = np.asarray(img, dtype=np.float64)
     if rng is not None:
-        noise = rng.normal(0, 1.2, (img.height, img.width))
-        img = Image.fromarray(np.clip(np.asarray(img, dtype=np.float64) + noise, 0, 255).round().astype(np.uint8), "L")
-    return img
+        gray = gray + rng.normal(0, 1.2, gray.shape)
+    # Colourise: darkness of the line is the share of pen colour over the paper colour.
+    share = np.clip((250.0 - gray) / 230.0, 0, 1)[..., None]
+    paper = np.array(PAPER_RGB, dtype=np.float64)
+    rgb = paper * (1 - share) + np.array(PEN_RGB[pen], dtype=np.float64) * share
+    return Image.fromarray(np.clip(rgb, 0, 255).round().astype(np.uint8), "RGB")
 
 
 def png_bytes(img: Image.Image, dpi: int) -> bytes:
@@ -261,10 +270,33 @@ def _jpeg(img: Image.Image, quality: int) -> Image.Image:
     img.save(buf, "JPEG", quality=quality)
     buf.seek(0)
     with Image.open(buf) as out:
-        return out.convert("L")
+        return out.convert(img.mode)
 
 
-def degrade(img: Image.Image, dpi: int, name: str, rng: np.random.Generator) -> tuple[Image.Image, int, dict]:
+def _stamp(img: Image.Image, dpi: int, rng: np.random.Generator, color: str, name: str):
+    mm = dpi / 25.4
+    cx, cy = img.width * rng.uniform(0.2, 0.8), img.height * rng.uniform(0.2, 0.8)
+    r = img.height * rng.uniform(0.35, 0.5)
+    strength, w = float(rng.uniform(0.55, 0.85)), max(1, round(0.5 * mm))
+    mask = Image.new("L", img.size, 0)
+    d = ImageDraw.Draw(mask)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=255, width=w)
+    d.ellipse([cx - 0.8 * r, cy - 0.8 * r, cx + 0.8 * r, cy + 0.8 * r], outline=255, width=max(1, w // 2))
+    for i in range(10):       # short marks between the rings, like stamp lettering
+        a = 2 * math.pi * i / 10
+        d.line([(cx + 0.84 * r * math.cos(a), cy + 0.84 * r * math.sin(a)),
+                (cx + 0.95 * r * math.cos(a + 0.2), cy + 0.95 * r * math.sin(a + 0.2))], fill=255, width=max(1, w // 2))
+    # Ink layers multiply: where the stamp covers the pen line, both inks darken the paper.
+    alpha = np.asarray(mask, dtype=np.float64)[..., None] / 255.0 * strength
+    tint = np.array(STAMP_COLORS[color], dtype=np.float64) / np.array(PAPER_RGB, dtype=np.float64)
+    out = np.asarray(img.convert("RGB"), dtype=np.float64) * (1 - alpha + alpha * np.clip(tint, 0, 1))
+    return (Image.fromarray(np.clip(out, 0, 255).round().astype(np.uint8), "RGB"), dpi,
+            {"name": name, "color": color, "center_frac": [round(cx / img.width, 3), round(cy / img.height, 3)],
+             "radius_px": round(r, 1), "strength": round(strength, 3)})
+
+
+def degrade(img: Image.Image, dpi: int, name: str, rng: np.random.Generator,
+            pen: str = "black") -> tuple[Image.Image, int, dict]:
     """Apply one named document problem. Returns the picture, its resolution and what was done."""
     mm = dpi / 25.4
     if name == "clean":
@@ -272,24 +304,15 @@ def degrade(img: Image.Image, dpi: int, name: str, rng: np.random.Generator) -> 
     if name == "ruled":
         y = int(img.height * rng.uniform(0.72, 0.85))
         gray, w = int(rng.uniform(60, 110)), max(1, round(0.25 * mm))
-        layer = Image.new("L", img.size, 255)
-        ImageDraw.Draw(layer).line([(0, y), (img.width, y)], fill=gray, width=w)
+        layer = Image.new(img.mode, img.size, (255,) * len(img.getbands()) if len(img.getbands()) > 1 else 255)
+        ImageDraw.Draw(layer).line([(0, y), (img.width, y)], fill=(gray,) * len(img.getbands())
+                                   if len(img.getbands()) > 1 else gray, width=w)
         return ImageChops.darker(img, layer), dpi, {"name": name, "y_frac": round(y / img.height, 3), "gray": gray,
                                                      "width_px": w}
     if name == "stamp":
-        cx, cy = img.width * rng.uniform(0.2, 0.8), img.height * rng.uniform(0.2, 0.8)
-        r = img.height * rng.uniform(0.35, 0.5)
-        gray, w = int(rng.uniform(130, 170)), max(1, round(0.5 * mm))
-        layer = Image.new("L", img.size, 255)
-        d = ImageDraw.Draw(layer)
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=gray, width=w)
-        d.ellipse([cx - 0.8 * r, cy - 0.8 * r, cx + 0.8 * r, cy + 0.8 * r], outline=gray, width=max(1, w // 2))
-        for i in range(10):       # short marks between the rings, like stamp lettering
-            a = 2 * math.pi * i / 10
-            d.line([(cx + 0.84 * r * math.cos(a), cy + 0.84 * r * math.sin(a)),
-                    (cx + 0.95 * r * math.cos(a + 0.2), cy + 0.95 * r * math.sin(a + 0.2))], fill=gray, width=max(1, w // 2))
-        return ImageChops.darker(img, layer), dpi, {"name": name, "center_frac": [round(cx / img.width, 3), round(cy / img.height, 3)],
-                                                     "radius_px": round(r, 1), "gray": gray}
+        return _stamp(img, dpi, rng, str(rng.choice(STAMP_CONTRAST[pen])), name)
+    if name == "stamp-same":
+        return _stamp(img, dpi, rng, pen, name)
     if name == "blur":
         sigma = round(float(rng.uniform(1.6, 2.4)), 3)
         return img.filter(ImageFilter.GaussianBlur(sigma)), dpi, {"name": name, "sigma_px": sigma}
@@ -309,9 +332,11 @@ def make_copy(img: Image.Image, dpi: int, rng: np.random.Generator) -> tuple[Ima
     rotation = round(float(rng.uniform(-2.5, 2.5)), 3)
     background = int(rng.integers(238, 251))
     small = img.resize((max(1, round(img.width * resize)), max(1, round(img.height * resize))), Image.LANCZOS)
-    turned = _jpeg(small, quality).rotate(rotation, resample=Image.BICUBIC, expand=True, fillcolor=250)
+    fill = PAPER_RGB if img.mode == "RGB" else 250
+    turned = _jpeg(small, quality).rotate(rotation, resample=Image.BICUBIC, expand=True, fillcolor=fill)
     mx, my = (int(rng.uniform(2, 6) * dpi / 25.4) for _ in range(2))
-    page = Image.new("L", (turned.width + 2 * mx, turned.height + 2 * my), background)
+    page_fill = (background, background, background - 3) if img.mode == "RGB" else background
+    page = Image.new(img.mode, (turned.width + 2 * mx, turned.height + 2 * my), page_fill)
     page.paste(turned, (mx, my))
     return page, dpi, {"kind": "digital-copy", "resize": resize, "jpeg_quality": quality, "rotation_deg": rotation,
                        "background": background}
@@ -339,29 +364,30 @@ def generate_dataset(out, writers: int = 12, genuine: int = 4, forgeries: int = 
         wid = f"w{w + 1:03d}"
         rng = np.random.default_rng([seed, 1, w])
         writer = new_writer(rng)
+        pen = ("black", "blue")[int(np.random.default_rng([seed, 3, w]).integers(0, 2))]
         originals = []
         for g in range(genuine):
             sid = f"{wid}-g{g + 1}"
-            img = render(_sample(writer, "genuine", rng), dpi, rng)
-            save(sid, img, dpi, writer_id=wid, kind="genuine", stratum="clean", sample=sid)
+            img = render(_sample(writer, "genuine", rng), dpi, rng, pen=pen)
+            save(sid, img, dpi, writer_id=wid, kind="genuine", stratum="clean", sample=sid, pen=pen)
             originals.append((sid, img, "genuine"))
         for f in range(forgeries):
             sid = f"{wid}-f{f + 1}"
-            img = render(_sample(writer, "forgery-skilled", rng), dpi, rng)
-            save(sid, img, dpi, writer_id=wid, kind="forgery-skilled", stratum="clean", sample=sid)
+            img = render(_sample(writer, "forgery-skilled", rng), dpi, rng, pen=pen)
+            save(sid, img, dpi, writer_id=wid, kind="forgery-skilled", stratum="clean", sample=sid, pen=pen)
             originals.append((sid, img, "forgery-skilled"))
         for si, stratum in enumerate(strata):
             for oi, (sid, img, kind) in enumerate(originals):
                 srng = np.random.default_rng([seed, 2, w, si, oi])
                 if stratum != "clean":
-                    bad, bad_dpi, params = degrade(img, dpi, stratum, srng)
+                    bad, bad_dpi, params = degrade(img, dpi, stratum, srng, pen=pen)
                     save(f"{sid}@{stratum}", bad, bad_dpi, writer_id=wid, kind=kind, stratum=stratum, sample=sid,
-                         degradation=params)
+                         degradation=params, pen=pen)
                 if kind == "genuine":
                     copy, copy_dpi, copy_params = make_copy(img, dpi, srng)
-                    copy, copy_dpi, params = degrade(copy, copy_dpi, stratum, srng)
+                    copy, copy_dpi, params = degrade(copy, copy_dpi, stratum, srng, pen=pen)
                     save(f"{sid}-copy@{stratum}", copy, copy_dpi, writer_id=wid, kind="copy", stratum=stratum,
-                         sample=f"{sid}-copy", source_item=sid, degradation={**params, "copy": copy_params})
+                         sample=f"{sid}-copy", source_item=sid, degradation={**params, "copy": copy_params}, pen=pen)
     manifest = datasets.new_manifest(
         title=f"Synthetic signatures (seed {seed})", license_class="own",
         license_name="Generated by forensic-hand; no personal data; no third-party rights",

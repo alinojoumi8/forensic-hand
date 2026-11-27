@@ -244,3 +244,32 @@ each with a test in `tests/test_datasets.py`:
 
 Command: `coderabbit review --committed --base-commit b46a40e --agent` (the review-7 fixes only). 0 findings.
 Final: 315 passed, 2 skipped (network tests; they passed when run with FHAND_NETWORK=1 in Stage 2).
+
+## Stamp fix: colour ink separation (2026-11-27)
+
+Synthetic data is now in colour (generator version 2): each writer has a black or blue pen; stamps are
+red, blue, violet or black and multiply with the pen ink; new condition `stamp-same` (stamp in the pen's
+own colour). The copy check removes a second ink before comparing: Lab colour, 2-means on the colour
+axes, two inks only if their hues differ by 15 degrees or one is neutral and the other coloured; the pen
+is the ink with the darker core (judged on pixels near each ink colour only). Tests: `tests/test_inks.py`.
+
+How the settings were chosen:
+- The hue rule (15 degrees) is twice the largest hue drift measured inside one blue pen line under
+  JPEG, blur, 150 DPI and copying (7.8 degrees). It was not tuned to make stamps pass.
+- A first version picked the wrong ink when a black stamp crossed a blue pen: mixed pixels made the
+  stamp look darker. Darkness is now judged on pixels close to each ink colour only.
+
+Held-out result (fresh seed 3, 12 writers, 840 items; synthetic only), copies caught at warning:
+
+| Condition | Separation off | Separation on |
+|---|---|---|
+| stamp (other colour) | 0% | 60% (95% CI 46 to 73) |
+| stamp-same | 0% | 0% (limit: same hue cannot be separated) |
+| ruled line | 75% | 73% (a grey printed line over a blue pen counts as a second ink; once it was darker than the pen) |
+| clean, blur, JPEG, 150 DPI | unchanged | unchanged |
+| all | 51% | 59% |
+| false alarms | 0 | 0 of 2,016 negative pairs |
+
+Known limits: a stamp in the pen's colour or a near hue (violet over blue, 18 degrees apart) is not
+separated; a stamp darker than the pen would be kept instead of the pen. The copy check records the kept
+and removed colours so that the examiner can check. Real stamps and scanners are not tested yet.

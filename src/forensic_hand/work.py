@@ -183,10 +183,11 @@ def add_measurement(case, crop_id, kind, points, note=None) -> dict:
 
 def _clone_settings(cfg: dict) -> dict:
     return {"radius_px": cfg["clone_radius_px"], "blur_px": cfg["clone_blur_px"],
+            "ink_separation": cfg["clone_ink_separation"], "ink_hue_deg": cfg["clone_ink_hue_deg"],
             "rotations_deg": cfg["clone_rotations_deg"],
             "notice_at": cfg["clone_notice_at"], "warning_at": cfg["clone_warning_at"],
             "max_aspect_diff": cfg["clone_max_aspect_diff"], "min_ink_fraction": cfg["clone_min_ink_fraction"],
-            "method": "Otsu ink, long straight lines removed, farthest 2% of ink dropped, scale by ink spread, "
+            "method": "second ink of another hue removed (Lab 2-means), Otsu ink, long straight lines removed, farthest 2% of ink dropped, scale by ink spread, "
                       "small blur, cross-correlation shift, Pearson score",
             "status": cfg["status"]}
 
@@ -212,14 +213,17 @@ def run_clone_check(case, config: dict | None = None) -> dict:
     with case.ledger.lock():
         state = case.state()
         crops = state["crops"]
-        prepared, skipped = {}, []
+        prepared, skipped, separated = {}, [], {}
         for crop in crops:
             features = clones.prepare(crop_image(case, crop), cfg["clone_radius_px"], cfg["clone_min_ink_fraction"],
-                                      cfg["clone_blur_px"])
+                                      cfg["clone_blur_px"], separate=cfg["clone_ink_separation"],
+                                      hue_deg=cfg["clone_ink_hue_deg"])
             if features is None:
                 skipped.append(crop["crop_id"])
             else:
                 prepared[crop["crop_id"]] = features
+                if features["ink_separation"].get("inks") == 2:
+                    separated[crop["crop_id"]] = features["ink_separation"]
         pairs, found = [], []
         for i, a in enumerate(crops):
             for b in crops[i + 1:]:
@@ -243,7 +247,7 @@ def run_clone_check(case, config: dict | None = None) -> dict:
                                                 f"warning from {cfg['clone_warning_at']}).",
                                          limits=_CLONE_LIMITS, crops=[ida, idb], score=score))
         data = {"crops": [c["crop_id"] for c in crops], "pairs": pairs, "skipped": skipped,
-                "findings": found, "settings": settings}
+                "findings": found, "settings": settings, "ink_separation": separated}
         case.ledger.append("clone.checked", data)
         return data
 

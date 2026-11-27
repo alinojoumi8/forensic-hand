@@ -55,7 +55,7 @@ def test_a_rendered_signature_has_ink_on_paper():
     rng = np.random.default_rng(1)
     img = synth.render(synth.genuine(synth.new_writer(rng), rng), dpi=300, rng=rng)
     gray = np.asarray(img)
-    assert img.mode == "L" and 100 < img.width < 2500 and 50 < img.height < 1200
+    assert img.mode == "RGB" and 100 < img.width < 2500 and 50 < img.height < 1200
     assert gray.min() < 90 and np.median(gray) > 230
 
 

@@ -136,7 +136,8 @@ Use `--skip-tsa-signature` to check the structure only, with no OpenSSL.
 - The tool does not test if a digital signature inside a PDF is valid.
 - One writer at a time: a lock file (`ledger.lock`) makes a second writer wait. It is not part of the case.
 - The copy check is a screen. Its values were tuned on synthetic lines only, not on real casework.
-  It removes long straight printed lines, but other marks in a crop lower the score: crop tightly.
+  It removes long straight printed lines, and a stamp of another colour than the pen (it records which
+  colour it kept). A stamp in the pen's own colour, or a near hue, still lowers the score: crop tightly.
 - A PDF crop is a new drawing of the page. Above the resolution of the scan, it shows no new detail.
 
 ## Tests

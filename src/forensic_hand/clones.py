@@ -13,6 +13,8 @@ Method (fixed rules, no model):
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from PIL import Image
 
@@ -106,15 +108,105 @@ def _drop_far_ink(weight: np.ndarray, share: float) -> np.ndarray:
     return np.where(dist <= cut, weight, 0.0)
 
 
+def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
+    """sRGB (0 to 255) to CIE Lab (D65): lightness L (0 to 100) and the colour axes a (green-red), b (blue-yellow)."""
+    c = np.asarray(rgb, dtype=np.float64) / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    m = np.array([[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750],
+                  [0.0193339, 0.1191920, 0.9503041]])
+    xyz = lin @ m.T / np.array([0.95047, 1.0, 1.08883])
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], axis=-1)
+
+
+NEUTRAL_CHROMA, CHROMATIC_CHROMA = 10.0, 20.0
+
+
+def _two_inks(c1: np.ndarray, c2: np.ndarray, hue_deg: float) -> bool:
+    """Do two ink colours (centres in the a,b plane) differ in hue, not only in strength?
+
+    The faint edge of a blue line is a weaker blue: same hue, lower chroma. That is one ink.
+    A neutral (black or grey) ink beside a coloured ink, or two clearly different hues, are two inks.
+    """
+    ch1, ch2 = float(np.hypot(*c1)), float(np.hypot(*c2))
+    if min(ch1, ch2) < NEUTRAL_CHROMA:
+        return max(ch1, ch2) > CHROMATIC_CHROMA
+    diff = abs(math.degrees(math.atan2(c1[1], c1[0]) - math.atan2(c2[1], c2[0]))) % 360
+    return min(diff, 360 - diff) >= hue_deg
+
+
+def separate_inks(img: Image.Image, hue_deg: float = 15.0, min_share: float = 0.05) -> tuple[np.ndarray, dict]:
+    """Grey picture of the pen ink only, when a second ink (a stamp) of another colour is present.
+
+    1. Ink pixels: darker than an Otsu threshold on lightness.
+    2. Two groups by colour (2-means in the a,b plane). Two inks only if the hues differ (see _two_inks)
+       and the smaller group holds at least `min_share` of the ink.
+    3. The pen is the group with the darker core (10th percentile of lightness): a pen line is usually
+       darker than a stamp. A very dark stamp, or a crop with printed text, can break this rule: the
+       record says which colour was kept, so the examiner can check.
+    4. Pixels of the other ink's colour that are not darker than that ink (overlaps keep the pen) become paper.
+    A grey picture, or one ink only, gives exactly the plain grey conversion.
+    """
+    rgb = np.asarray(img.convert("RGB"))
+    gray = np.asarray(img.convert("L"), dtype=np.float32)
+    spread = rgb.max(axis=2).astype(np.int16) - rgb.min(axis=2).astype(np.int16)
+    if int(spread.max(initial=0)) < 12:
+        return gray, {"inks": 1, "reason": "no colour"}
+    lab = rgb_to_lab(rgb)
+    light = lab[..., 0]
+    ink = light < otsu_threshold(np.clip(light * 2.55, 0, 255)) / 2.55
+    n = int(ink.sum())
+    if n < 50:
+        return gray, {"inks": 1, "reason": "too little ink"}
+    ab = lab[..., 1:][ink]
+    sample = ab[:: max(1, n // 20000)]
+    chroma = np.hypot(sample[:, 0], sample[:, 1])
+    centers = np.array([sample[np.argsort(chroma)[: max(1, len(sample) // 10)]].mean(axis=0), np.zeros(2)])
+    centers[1] = sample[int(np.argmax(np.hypot(*(sample - centers[0]).T)))]
+    for _ in range(15):
+        labels = np.argmin(np.stack([np.hypot(*(sample - c).T) for c in centers]), axis=0)
+        if labels.min() == labels.max():
+            return gray, {"inks": 1, "reason": "one colour"}
+        centers = np.array([sample[labels == k].mean(axis=0) for k in (0, 1)])
+    full = np.argmin(np.stack([np.hypot(*(ab - c).T) for c in centers]), axis=0)
+    share = float(min((full == 0).mean(), (full == 1).mean()))
+    if share < min_share or not _two_inks(centers[0], centers[1], hue_deg):
+        return gray, {"inks": 1, "reason": "one hue"}
+    ink_light = light[ink]
+    # Judge darkness only from pixels close to their own ink colour: where the pen crosses the stamp,
+    # mixed pixels lie between the two colours and would make the stamp look darker than it is.
+    gap = float(np.hypot(*(centers[0] - centers[1])))
+    near = [np.hypot(*(ab - centers[k]).T) < 0.35 * gap for k in (0, 1)]
+    cores = [float(np.percentile(ink_light[(full == k) & near[k]] if (near[k] & (full == k)).any()
+                                 else ink_light[full == k], 10)) for k in (0, 1)]
+    pen = int(np.argmin(cores))
+    other = 1 - pen
+    cp, co = centers[pen], centers[other]
+    direction = co - cp
+    t = ((lab[..., 1:] - cp) @ direction) / float(direction @ direction)
+    other_light = float(np.median(ink_light[full == other]))
+    remove = (t > 0.5) & (light >= other_light - 10)
+    out = gray.copy()
+    out[remove] = float(np.percentile(gray, 90))
+    ink_rgb = rgb[ink]
+    return out, {"inks": 2, "kept_rgb": [int(v) for v in ink_rgb[full == pen].mean(axis=0).round()],
+                 "removed_rgb": [int(v) for v in ink_rgb[full == other].mean(axis=0).round()],
+                 "removed_share": round(float(remove[ink].mean()), 4)}
+
+
 def prepare(img: Image.Image, radius_px: float, min_ink: float, blur_sigma: float = 1.5,
-            line_share: float = 0.30) -> dict | None:
+            line_share: float = 0.30, separate: bool = True, hue_deg: float = 15.0) -> dict | None:
     """Ink of a crop, ready to compare. None when there is no clear ink.
 
-    Long straight lines are removed first. The size is made equal by the spread of the ink (its
-    radius of gyration), not by the edges of the ink: noise moves an edge, but it barely moves
-    the spread of all the ink.
+    A second ink of another colour (a stamp) is removed first, then long straight lines. The size
+    is made equal by the spread of the ink (its radius of gyration), not by the edges of the ink:
+    noise moves an edge, but it barely moves the spread of all the ink.
     """
-    gray = np.asarray(on_white(img).convert("L"), dtype=np.float32)
+    paper = on_white(img)
+    if separate:
+        gray, separation = separate_inks(paper, hue_deg)
+    else:
+        gray, separation = np.asarray(paper.convert("L"), dtype=np.float32), {"inks": None, "reason": "off"}
     threshold = otsu_threshold(gray)
     ink = remove_ruling_lines(gray < threshold, line_share)
     fraction = float(ink.mean())
@@ -142,7 +234,8 @@ def prepare(img: Image.Image, radius_px: float, min_ink: float, blur_sigma: floa
     factor = radius_px / radius
     size = (max(8, round(dark.shape[1] * factor)), max(8, round(dark.shape[0] * factor)))
     resized = Image.fromarray(dark.astype(np.float32), mode="F").resize(size, Image.BILINEAR)
-    return {"ink": _blur(np.asarray(resized, dtype=np.float64), blur_sigma), "elongation": elongation}
+    return {"ink": _blur(np.asarray(resized, dtype=np.float64), blur_sigma), "elongation": elongation,
+            "ink_separation": separation}
 
 
 def _place(arr: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
