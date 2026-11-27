@@ -255,3 +255,34 @@ The first run hit the rate limit (wait 11 minutes); the rerun completed with no 
 Known flaky test, not caused by Stage 4: `tests/test_server.py::test_a_large_body_is_refused` failed twice in
 full runs with a Windows `ConnectionAbortedError` (the server answers 413 before the client has sent the
 300 kB body). It passed 6 times out of 6 on its own.
+
+## Fix: a manifest saved above the picture folder (`--out`)
+
+Found while importing a public set: `fhand dataset import --out <file>` (and `dataset build --out`) wrote each
+file path relative to the picture folder. A manifest reads its files relative to its own folder, so with the
+manifest one folder up, `dataset verify` said that every file was missing.
+
+The fix: the file paths are now relative to the manifest's folder. A manifest saved beside or below the picture
+folder is refused with a clear error, also in a dry run. The import summary records the folder that the
+pattern was used in (`"folder": "raw"`, or `"."`). Item ids do not change.
+
+| # | What is guaranteed | Test | RED (before the fix) | GREEN |
+|---|---|---|---|---|
+| 1 | A manifest above the picture folder finds all its files | `test_a_manifest_saved_above_the_picture_folder_finds_its_files` | paths had no `raw/` | PASS |
+| 2 | A manifest in the picture folder keeps the short paths | `test_a_manifest_saved_in_the_picture_folder_keeps_short_paths` | no `folder` in the summary | PASS |
+| 3 | A manifest beside or below the pictures is refused, and nothing is written | `test_a_manifest_that_cannot_see_the_pictures_is_refused[beside, below]` | did not raise | PASS |
+| 4 | The CLI writes and verifies a manifest above the folder; a bad place gives exit 2, also in a dry run | `test_the_import_command_writes_a_manifest_above_the_folder` | verify returned 1 | PASS |
+| 5 | The same for `dataset build` (CSV) | `test_build_from_csv_with_the_manifest_above_the_folder` | path was `s1.png`, not `scans/s1.png` | PASS |
+
+Commands: `pytest tests/test_import.py tests/test_datasets.py` (49 passed); full suite 438 passed, 2 skipped,
+1 failed: the known flaky `test_a_large_body_is_refused`, which then passed 3 times out of 3 on its own and
+also passed without this change. Ruff: all checks passed.
+
+One test was wrong at first, not the code: the CLI test used a place above the folder as the "bad" place. It now
+uses a folder beside the pictures.
+
+Check on real data (not a fixture): the SOHI set (3,936 pictures) imported with the manifest one folder above
+`raw/` gave paths such as `raw/SOHI/P001/Forged/P001_F01.png`, and `dataset verify` said OK. The same import with
+`--out data/results/...` was refused with exit 2 and wrote nothing. The check manifest was then removed.
+
+### CodeRabbit review 17 (this fix): 0 findings
