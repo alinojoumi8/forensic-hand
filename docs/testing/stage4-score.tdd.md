@@ -328,3 +328,58 @@ Check on real data (not a fixture): the picture screen on all 1,604 CVL pages ga
 It asked whether the page list tells "preview" and "unreadable" apart. It does: `pages.py` checks
 `problem == "unreadable"` by name and raises `CaseError` naming the page; a preview gives the readable pages.
 Tests 3 and 6 pass. No code changed after this review.
+
+## Feature: `fhand dataset split` (the fit group and the test group for Phase 5)
+
+Phase 5 needs one real collection split into a fit group (to calibrate) and a test group (to publish), with no
+writer in both, chosen before anyone sees a result. Before this command the split was a hand step.
+
+`datasets.split_manifest` and `fhand dataset split MANIFEST --seed N [--test-share 0.5] [--dry-run]`:
+- Each item goes with its writer; a skilled forgery goes with the writer it imitates.
+- Order: the SHA-256 of `<seed>:<writer id>`, so anyone can repeat the split with `hashlib` alone.
+- Test target: floor(share x writers who may join a group). Consent places a writer who agreed to one use only;
+  those placements count toward the target. When consent gives another size, the split says so (`share_note`).
+- People whose handwriting is in both groups (writer ids and forger ids) are reported, not moved.
+- Both manifests are written beside the source (file paths stay valid), never over a file, and record the split.
+  On a failed write, the files this call made are removed, so a retry works.
+
+| # | What is guaranteed | Test (tests/test_split.py) | RED | GREEN |
+|---|---|---|---|---|
+| 1 | No writer in both groups; each item with its writer; both manifests verify; the split is recorded | `test_no_writer_is_in_both_groups_and_each_item_goes_with_its_writer` | no function | PASS |
+| 2 | The seed sets the split; the order is SHA-256 of `<seed>:<writer>`; a dry run writes nothing | `test_the_seed_sets_the_split_and_anyone_can_recompute_it` | no function | PASS |
+| 3 | The share sets the sizes (20 writers at 0.25: 5 and 15) | `test_the_test_share_sets_the_group_sizes` | no function | PASS |
+| 4 | At one half the fit group is not the smaller one (23 writers: 11 test, 12 fit) | `test_the_fit_group_is_never_the_smaller_one_at_half` | 12 and 11 with round() | PASS |
+| 5 | Consent places calibrate-only and publish-only writers; neither is left out | `test_consent_decides_the_group_a_writer_may_join` | no function | PASS |
+| 6 | Consent placements count toward the target, and the method text says so | `test_consent_places_count_toward_the_test_target` | wrong text | PASS |
+| 7 | Consent that breaks the share is reported, also by the command | `test_consent_that_breaks_the_share_is_reported` | no note | PASS |
+| 8 | A failed write leaves no half split, and a retry works | `test_a_failed_write_leaves_no_half_split` | OSError, fit file left | PASS |
+| 9 | A split before the forgery sessions gives the same groups later | `test_a_split_before_the_forgeries_gives_the_same_groups_later` | (guard) | PASS |
+| 10 | A person in both groups (one forger for all) is reported | `test_a_person_in_both_groups_is_reported` | no function | PASS |
+| 11 | Refusals: share outside 0 to 1 (also NaN), an existing file, another folder, too few writers | 4 tests | no function | PASS |
+| 12 | The command: dry run, output, never overwrites (exit 2) | `test_the_split_command` | exit 2 | PASS |
+| 13 | A calibration on the fit group shares no writer with the test group (`writers_overlap == []`) | `test_a_calibration_on_the_fit_group_shares_no_writer_with_the_test_group` | no function | PASS |
+
+Full suite: 465 passed, 2 skipped. Ruff: all checks passed. (One full run failed with 12 failures and 5 errors
+because a second pytest run used the same `.pytest_tmp` folder at the same time; alone, the suite passed.)
+
+Check on real data (not a fixture): SOHI (123 writers, CC BY 4.0, Mendeley Data DOI 10.17632/mvdb8by7yv.1) split
+with seed 20261127: fit 62 writers (1,984 items), test 61 writers (1,952 items); `dataset verify` OK for both.
+`calibrate` on the fit group (status candidate) and `validate --purpose publish --calibration` on the test group:
+`writers_overlap` = [] (no test writer was used to calibrate). The LR results on this set: Cllr 0.69 (95% by
+writers 0.62 to 0.75), misleading evidence for Hp 15.6% and for Hd 26.4%. They would fail the proposed pass marks
+(Cllr 0.5, Hd 5%), and SOHI has no forger ids, so the 2-forger mark fails too. This was a dry run of the Phase 5
+steps on public data, not Phase 5 itself; nothing was released.
+
+### CodeRabbit review 20: 3 findings, all fixed
+
+| Finding | Fix | Test |
+|---|---|---|
+| The method text saved in each manifest did not say what the code does | The text names the test target and how consent placements count toward it | 6 |
+| Consent can make the fit group smaller at one half, against the README | The split reports it (`share_note`) and the README says "unless consent decides otherwise". Not a refusal: consent placements cannot be moved, so a refusal would block the data for good | 7 |
+| A failed write left the fit manifest, and every retry refused | Both manifests are checked first; each name is claimed with an exclusive create; on error the files of this call are removed | 8 |
+
+### CodeRabbit review 21: 1 finding, fixed (docs only)
+
+The protocol advised a split before the forgery sessions but did not say what to do after them. It now says:
+build the full manifest under a new name and split it again with the same seed; the groups stay the same (test
+9). No code changed, so no further review was run.
