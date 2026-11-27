@@ -17,7 +17,7 @@ import pypdfium2 as pdfium
 from PIL import Image
 
 from .case import CaseError
-from .imaging import on_white
+from .imaging import frame_count, on_white
 from .quality import _clean_dpi
 
 IMAGE_TYPES = {"png", "jpeg", "tiff", "bmp", "gif", "webp"}
@@ -93,7 +93,7 @@ def page_geometry(case, record) -> list[dict]:
         if media in IMAGE_TYPES:
             pages = []
             with Image.open(path) as img:
-                for index in range(getattr(img, "n_frames", 1)):
+                for index in range(frame_count(img)[0]):   # a preview block after the pages is not a page
                     img.seek(index)
                     pages.append({"page": index + 1, "units": "px", "width": img.width, "height": img.height,
                                   "dpi": _clean_dpi(img.info.get("dpi"))})

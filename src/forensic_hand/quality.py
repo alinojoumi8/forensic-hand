@@ -13,7 +13,7 @@ from PIL import Image
 
 from .config import DEFAULTS
 from .findings import finding
-from .imaging import to_8bit
+from .imaging import frame_count, to_8bit
 
 # Standard JPEG luminance table (ITU T.81, Annex K). Used to estimate the quality setting.
 _STD_LUMA = (
@@ -127,11 +127,17 @@ def analyse_image(img: Image.Image, config: dict | None = None) -> dict:
     cfg = config or DEFAULTS
     width, height = img.size
     dpi = _clean_dpi(img.info.get("dpi"))
+    frames, extra_block = frame_count(img)
     metrics: dict = {
         "format": img.format, "mode": img.mode, "width": width, "height": height, "dpi": dpi,
-        "frames": int(getattr(img, "n_frames", 1)),
+        "frames": frames,
     }
     out: list[dict] = []
+    if extra_block:
+        out.append(finding("IMG-EXTRA-BLOCK", "info", "The file holds a block after the picture that is not a page.",
+                           detail="Scanners and cameras often store a small preview there. The tool did not read it.",
+                           limits="It is not a sign of a change by itself. The tool does not compare the block "
+                                  "with the picture; another program can show it."))
 
     if min(width, height) < cfg["min_side_px_warning_below"]:
         out.append(finding("IMG-SMALL", "warning", "The picture is very small.",

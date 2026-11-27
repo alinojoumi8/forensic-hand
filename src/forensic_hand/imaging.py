@@ -25,6 +25,35 @@ def to_8bit(img: Image.Image) -> Image.Image:
     return Image.fromarray(out)
 
 
+_FRAME_ERRORS = (TypeError, ValueError, OSError, SyntaxError)
+
+
+def frame_count(img: Image.Image) -> tuple[int, bool]:
+    """The pages of a picture file that can be read, and whether a block after them could not be read.
+
+    Some scanners put a small JPEG preview after the page of a TIFF, in a block with no width or height.
+    Pillow's page count (n_frames) then raises TypeError, and it leaves the file on that broken block.
+    So count page by page instead, and go back to the page the picture was on.
+    """
+    start = img.tell()
+    try:
+        return int(getattr(img, "n_frames", 1)), False
+    except _FRAME_ERRORS:
+        pass
+    count, broken = 0, False
+    while True:
+        try:
+            img.seek(count)
+        except EOFError:
+            break
+        except _FRAME_ERRORS:
+            broken = True
+            break
+        count += 1
+    img.seek(start)
+    return max(count, 1), broken
+
+
 def on_white(img: Image.Image) -> Image.Image:
     """An RGB picture in which transparent parts are white paper.
 
