@@ -11,7 +11,7 @@ from .calibrate import PROPOSITIONS, CalibrationError
 from .case import Case, CaseError
 from .checks import run_checks
 from .config import DEFAULTS
-from .datasets import USES, DatasetError
+from .datasets import PRESETS, USES, DatasetError
 from .export import ExportError, export_case
 from .findings import count_levels
 from .ledger import LedgerError
@@ -20,6 +20,7 @@ from .prereg import PreregError
 from .release import ReleaseError
 from .report import write_report
 from .seal import SealError, create_seal, timestamp_seal
+from .validation import TASKS
 
 
 def _say(text: str, stream=None) -> None:
@@ -174,6 +175,32 @@ def cmd_dataset_build(args) -> int:
     return 0
 
 
+def cmd_dataset_import(args) -> int:
+    from .datasets import build_from_names
+
+    out = args.out or str(Path(args.folder) / "manifest.json")
+    if Path(out).exists() and not args.dry_run:
+        raise DatasetError(f"the file exists already; choose a new name: {out}")
+    done = build_from_names(args.folder, title=args.title, license_class=args.license_class,
+                            license_name=args.license_name, preset=args.preset, pattern=args.pattern,
+                            genuine=args.genuine, forgery=args.forgery, out=None if args.dry_run else out,
+                            license_url=args.license_url, dry_run=args.dry_run)
+    facts = done["import"]
+    _say(f"{facts['matched']} picture(s) match: {facts['writers']} writer(s), {facts['genuine_items']} genuine, "
+         f"{facts['forgery_items']} skilled forgeries")
+    if facts["skipped"]:
+        _say(f"Left out (no match, or another kind): {facts['skipped']}, for example: "
+             + ", ".join(facts["skipped_examples"]))
+    if args.license_class == "research-only":
+        _say("Research-only data: internal benchmarks only (validate --purpose benchmark). It can never calibrate "
+             "a score or be published.")
+    if args.dry_run:
+        _say("Dry run: nothing was written.")
+    else:
+        _say(f"Manifest: {out}")
+    return 0
+
+
 def cmd_calibrate(args) -> int:
     from .calibrate import calibrate, save_calibration
 
@@ -208,14 +235,18 @@ def cmd_validate(args) -> int:
     criteria = load_criteria(args.criteria) if args.criteria else None
     dossier = run_validation(args.manifests, purpose=args.purpose, blur_samples=args.blur_samples,
                              jpeg_samples=args.jpeg_samples, calibration=calibration, criteria=criteria,
-                             config={**DEFAULTS, "score_min_known": args.min_known})
+                             config={**DEFAULTS, "score_min_known": args.min_known}, tasks=args.tasks)
     path = write_dossier(dossier, args.out)
-    copy = dossier["tasks"]["copy-check"]["all"]
-    same = copy["negatives"]["same-writer"]["warning"]
-    _say(f"Copy check, all strata: copies flagged {copy['positives']['warning']['rate']}, "
-         f"same-writer false alarms {same['rate']} ({same['k']}/{same['n']})")
-    score = dossier["tasks"]["writer-score"]
-    if score.get("skipped"):
+    tasks = dossier["tasks"]
+    if "copy-check" in tasks:
+        copy = tasks["copy-check"]["all"]
+        same = copy["negatives"]["same-writer"]["warning"]
+        _say(f"Copy check, all strata: copies flagged {copy['positives']['warning']['rate']}, "
+             f"same-writer false alarms {same['rate']} ({same['k']}/{same['n']})")
+    score = tasks.get("writer-score")
+    if score is None:
+        pass
+    elif score.get("skipped"):
         _say(f"Writer score: not measured: {score['skipped']}")
     else:
         neg = score["all"]["negatives"]
@@ -452,6 +483,22 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--consent", help="consent CSV: consent_id, scopes (a;b), date, withdrawn")
     q.add_argument("--out", help="manifest file (default: manifest.json in the folder)")
     q.set_defaults(func=cmd_dataset_build)
+    q = dsub.add_parser("import", help="make a manifest for a set whose file names say the writer and the kind")
+    q.add_argument("folder", help="the folder of the set (sub-folders are read too)")
+    q.add_argument("--preset", choices=list(PRESETS), help="a known layout: " + "; ".join(
+        f"{k}: {v['note']}" for k, v in PRESETS.items()))
+    q.add_argument("--pattern", help="regular expression for the path inside the folder (/ between folders), "
+                                     "with the named groups writer and kind, and optionally set and forger")
+    q.add_argument("--genuine", nargs="+", metavar="WORD", help="kind words for genuine signatures")
+    q.add_argument("--forgery", nargs="+", metavar="WORD", help="kind words for skilled forgeries")
+    q.add_argument("--title", required=True)
+    q.add_argument("--license-class", required=True, choices=["own", "commercial", "research-only", "unknown"],
+                   help="most public signature sets are research-only")
+    q.add_argument("--license-name", required=True)
+    q.add_argument("--license-url")
+    q.add_argument("--out", help="manifest file (default: manifest.json in the folder)")
+    q.add_argument("--dry-run", action="store_true", help="show what matches; write nothing")
+    q.set_defaults(func=cmd_dataset_import)
 
     p = sub.add_parser("validate", help="measure the screens on labelled data and write a dossier")
     p.add_argument("manifests", nargs="+", metavar="MANIFEST")
@@ -463,6 +510,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--criteria", help="pass marks file (fhand prereg) to record and check in the dossier")
     p.add_argument("--min-known", type=int, default=DEFAULTS["score_min_known"],
                    help="known signatures per comparison for the raw writer score (default: %(default)s)")
+    p.add_argument("--tasks", nargs="+", choices=list(TASKS), metavar="TASK",
+                   help=f"run only these tasks: {', '.join(TASKS)} (default: all)")
     p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("calibrate", help="fit the writer score to a likelihood ratio (Stage 4)")

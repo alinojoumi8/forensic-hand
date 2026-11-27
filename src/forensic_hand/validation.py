@@ -433,9 +433,27 @@ def _results_hash(dossier: dict) -> str:
     return hashlib.sha256(json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+TASKS = ("copy-check", "blur-screen", "jpeg-estimate", "writer-score")
+
+
+def _run_task(name: str, sets, cfg: dict, blur_samples: int, jpeg_samples: int) -> dict:
+    if name == "copy-check":
+        return copy_check_task(sets, cfg)
+    if name == "blur-screen":
+        return blur_task(sets, cfg, blur_samples)
+    if name == "jpeg-estimate":
+        return jpeg_task(sets, cfg, jpeg_samples)
+    return writer_score_task(sets, cfg)
+
+
 def run_validation(manifest_paths, purpose: str = "benchmark", config: dict | None = None,
                    blur_samples: int = 12, jpeg_samples: int = 12, calibration: dict | None = None,
-                   criteria=None) -> dict:
+                   criteria=None, tasks=None) -> dict:
+    """Run the chosen tasks (default: all of TASKS) on labelled data. A calibration adds the LR task."""
+    chosen = list(TASKS) if tasks is None else [t for t in TASKS if t in set(tasks)]
+    unknown = sorted(set(tasks or []) - set(TASKS))
+    if unknown or not chosen:
+        raise DatasetError(f"unknown or no task(s): {', '.join(unknown) or 'none'}; the tasks are: {', '.join(TASKS)}")
     cfg = dict(config or DEFAULTS)
     sets, described = [], []
     for path in manifest_paths:
@@ -459,9 +477,8 @@ def run_validation(manifest_paths, purpose: str = "benchmark", config: dict | No
         "purpose": purpose,
         "environment": environment(cfg),
         "datasets": described,
-        "tasks": {"copy-check": copy_check_task(sets, cfg), "blur-screen": blur_task(sets, cfg, blur_samples),
-                  "jpeg-estimate": jpeg_task(sets, cfg, jpeg_samples),
-                  "writer-score": writer_score_task(sets, cfg)},
+        "tasks_run": chosen,
+        "tasks": {name: _run_task(name, sets, cfg, blur_samples, jpeg_samples) for name in chosen},
         "limits": LIMITS,
         "generated_claimed": utc_now(),
     }
@@ -498,6 +515,51 @@ def _pct(r: dict) -> str:
         return "-"
     lo, hi = r["ci95"]
     return f"{r['rate'] * 100:.1f}% ({r['k']}/{r['n']}; 95% CI {lo * 100:.1f} to {hi * 100:.1f})"
+
+
+def _copy_html(copy: dict) -> str:
+    parts = []
+    add = parts.append
+    s = copy["settings"]
+    add("<h2>Copy check (digital cut and paste)</h2>")
+    add(f"<p class='muted'>Warning at a score of {_e(s['clone_warning_at'])}, note at {_e(s['clone_notice_at'])}. "
+        "A good result: copies flagged near 100%, false alarms near 0%.</p><ul>")
+    for name, text in copy["pairs"].items():
+        add(f"<li><strong>{_e(name)}</strong>: {_e(text)}</li>")
+    add("</ul><div class='scroll'><table><tr><th>Stratum</th><th>Copies flagged (warning)</th>"
+        "<th>False alarms: same writer</th><th>False alarms: skilled forgery</th><th>False alarms: other writer</th>"
+        "<th>AUC</th><th>EER</th></tr>")
+    for name, row in [*copy["strata"].items(), ("all strata", copy["all"])]:
+        neg = row["negatives"]
+        add(f"<tr><td>{_e(name)}</td><td class='n'>{_e(_pct(row['positives']['warning']))}</td>"
+            + "".join(f"<td class='n'>{_e(_pct(neg[t]['warning']))}</td>" for t in NEGATIVE_TYPES)
+            + f"<td class='n'>{_e(row['auc'])}</td><td class='n'>{_e(row['eer']['eer'])}</td></tr>")
+    add("</table></div><h3>At the note level</h3><div class='scroll'><table><tr><th>Stratum</th>"
+        "<th>Copies flagged (note)</th><th>False alarms: same writer</th><th>Highest same-writer score</th></tr>")
+    for name, row in [*copy["strata"].items(), ("all strata", copy["all"])]:
+        sw = row["negatives"]["same-writer"]
+        add(f"<tr><td>{_e(name)}</td><td class='n'>{_e(_pct(row['positives']['notice']))}</td>"
+            f"<td class='n'>{_e(_pct(sw['notice']))}</td><td class='n'>{_e(sw['max_score'])}</td></tr>")
+    add("</table></div>")
+    return "".join(parts)
+
+
+def _blur_html(blur: dict) -> str:
+    rows = "".join(f"<tr><td class='n'>{_e(row['sigma_px'])}</td><td class='n'>{_e(_pct(row['warning']))}</td>"
+                   f"<td class='n'>{_e(_pct(row['note_or_warning']))}</td>"
+                   f"<td class='n'>{_e(row['mean_sharpness'])}</td></tr>" for row in blur["rows"])
+    return (f"<h2>Blur screen</h2><p class='muted'>{_e(blur['method'])}; {_e(blur['samples'])} signature(s).</p>"
+            "<div class='scroll'><table><tr><th>Blur added (px)</th><th>Warning given</th>"
+            f"<th>Note or warning given</th><th>Mean sharpness score</th></tr>{rows}</table></div>")
+
+
+def _jpeg_html(jpg: dict) -> str:
+    rows = "".join(f"<tr><td class='n'>{_e(row['quality'])}</td><td class='n'>{_e(row['mean_abs_error'])}</td>"
+                   f"<td class='n'>{_e(row['max_abs_error'])}</td><td>{_e(row['expected_level'])}</td>"
+                   f"<td class='n'>{_e(_pct(row['level_agrees']))}</td></tr>" for row in jpg["rows"])
+    return (f"<h2>JPEG quality estimate</h2><p class='muted'>{_e(jpg['samples'])} signature(s).</p>"
+            "<div class='scroll'><table><tr><th>True quality</th><th>Mean error</th><th>Largest error</th>"
+            f"<th>Expected level</th><th>Level given as expected</th></tr>{rows}</table></div>")
 
 
 def _writer_html(task: dict) -> str:
@@ -647,29 +709,9 @@ def dossier_html(d: dict) -> str:
             f"<td class='mono'>{_e(ds['manifest_sha256'])}</td></tr>")
     add("</table></div>")
 
-    copy = d["tasks"]["copy-check"]
-    s = copy["settings"]
-    add("<h2>Copy check (digital cut and paste)</h2>")
-    add(f"<p class='muted'>Warning at a score of {_e(s['clone_warning_at'])}, note at {_e(s['clone_notice_at'])}. "
-        "A good result: copies flagged near 100%, false alarms near 0%.</p><ul>")
-    for name, text in copy["pairs"].items():
-        add(f"<li><strong>{_e(name)}</strong>: {_e(text)}</li>")
-    add("</ul><div class='scroll'><table><tr><th>Stratum</th><th>Copies flagged (warning)</th>"
-        "<th>False alarms: same writer</th><th>False alarms: skilled forgery</th><th>False alarms: other writer</th>"
-        "<th>AUC</th><th>EER</th></tr>")
-    for name, row in [*copy["strata"].items(), ("all strata", copy["all"])]:
-        neg = row["negatives"]
-        add(f"<tr><td>{_e(name)}</td><td class='n'>{_e(_pct(row['positives']['warning']))}</td>"
-            + "".join(f"<td class='n'>{_e(_pct(neg[t]['warning']))}</td>" for t in NEGATIVE_TYPES)
-            + f"<td class='n'>{_e(row['auc'])}</td><td class='n'>{_e(row['eer']['eer'])}</td></tr>")
-    add("</table></div><h3>At the note level</h3><div class='scroll'><table><tr><th>Stratum</th>"
-        "<th>Copies flagged (note)</th><th>False alarms: same writer</th><th>Highest same-writer score</th></tr>")
-    for name, row in [*copy["strata"].items(), ("all strata", copy["all"])]:
-        sw = row["negatives"]["same-writer"]
-        add(f"<tr><td>{_e(name)}</td><td class='n'>{_e(_pct(row['positives']['notice']))}</td>"
-            f"<td class='n'>{_e(_pct(sw['notice']))}</td><td class='n'>{_e(sw['max_score'])}</td></tr>")
-    add("</table></div>")
-
+    tasks = d["tasks"]                  # a run can choose its tasks (validate --tasks)
+    if "copy-check" in tasks:
+        add(_copy_html(tasks["copy-check"]))
     if "writer-score" in d["tasks"]:     # dossiers made before Stage 4 have no writer score
         add(_writer_html(d["tasks"]["writer-score"]))
     if "lr" in d["tasks"]:
@@ -677,24 +719,13 @@ def dossier_html(d: dict) -> str:
     if d.get("pass_marks"):
         add(_marks_html(d["pass_marks"]))
 
-    blur = d["tasks"]["blur-screen"]
-    add(f"<h2>Blur screen</h2><p class='muted'>{_e(blur['method'])}; {_e(blur['samples'])} signature(s).</p>"
-        "<div class='scroll'><table><tr><th>Blur added (px)</th><th>Warning given</th><th>Note or warning given</th>"
-        "<th>Mean sharpness score</th></tr>")
-    for row in blur["rows"]:
-        add(f"<tr><td class='n'>{_e(row['sigma_px'])}</td><td class='n'>{_e(_pct(row['warning']))}</td>"
-            f"<td class='n'>{_e(_pct(row['note_or_warning']))}</td><td class='n'>{_e(row['mean_sharpness'])}</td></tr>")
-    add("</table></div>")
-
-    jpg = d["tasks"]["jpeg-estimate"]
-    add(f"<h2>JPEG quality estimate</h2><p class='muted'>{_e(jpg['samples'])} signature(s).</p><div class='scroll'>"
-        "<table><tr><th>True quality</th><th>Mean error</th><th>Largest error</th><th>Expected level</th>"
-        "<th>Level given as expected</th></tr>")
-    for row in jpg["rows"]:
-        add(f"<tr><td class='n'>{_e(row['quality'])}</td><td class='n'>{_e(row['mean_abs_error'])}</td>"
-            f"<td class='n'>{_e(row['max_abs_error'])}</td><td>{_e(row['expected_level'])}</td>"
-            f"<td class='n'>{_e(_pct(row['level_agrees']))}</td></tr>")
-    add("</table></div>")
+    if "blur-screen" in tasks:
+        add(_blur_html(tasks["blur-screen"]))
+    if "jpeg-estimate" in tasks:
+        add(_jpeg_html(tasks["jpeg-estimate"]))
+    skipped = [t for t in TASKS if t not in tasks]
+    if skipped:
+        add(f"<p class='muted'>Not run in this dossier: {_e(', '.join(skipped))}.</p>")
 
     add("<h2>What this does not show</h2><ul>" + "".join(f"<li>{_e(x)}</li>" for x in d["limits"]) + "</ul>")
     env = d["environment"]

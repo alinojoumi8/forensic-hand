@@ -107,7 +107,8 @@ def test_the_presets_name_their_kind_words():
 def test_sixteen_bit_and_one_bit_scans_keep_their_ink():
     img = synth.render(synth.genuine(synth.new_writer(np.random.default_rng(5)), np.random.default_rng(6)), 300)
     gray = np.asarray(img.convert("L"), dtype=np.uint16)
-    sixteen = Image.fromarray(gray * 257, mode="I;16")
+    sixteen = Image.fromarray((gray * 257).astype(np.uint16))         # Pillow opens this as a 16-bit grey picture
+    assert sixteen.mode.startswith("I")
     one_bit = img.convert("L").point(lambda v: 255 if v > 160 else 0).convert("1")
     assert np.asarray(on_white(sixteen).convert("L")).min() < 100     # the ink did not turn white
     for picture in (sixteen, one_bit):

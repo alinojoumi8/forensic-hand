@@ -135,6 +135,22 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
 .\.venv\Scripts\fhand.exe release --calibration data\cal.json --criteria data\marks.json --dossier data\test-run\dossier.json --out data\release.json
 ```
 
+- **A public signature set** (for example CEDAR or BHSig260) can be read by its file names. Most such sets
+  allow non-commercial research only: register them as `research-only`, and the tool uses them for internal
+  benchmarks only. It refuses to calibrate a score or publish results with them. Check the names first with
+  `--dry-run`; for other layouts give `--pattern` with the named groups `writer` and `kind`.
+
+```powershell
+.\.venv\Scripts\fhand.exe dataset import D:\data\cedar --preset cedar --title "CEDAR" --license-class research-only --license-name "CEDAR: non-commercial research only" --dry-run
+```
+
+```powershell
+.\.venv\Scripts\fhand.exe validate D:\data\cedar\manifest.json --out D:\data\cedar-benchmark --tasks writer-score
+```
+
+  `--tasks` runs only the chosen tasks. The copy check compares every pair of signatures of a writer, so on a
+  large set it is slow; a public set has no digital copies, so it measures only false alarms there.
+
 - **Synthetic results are not error rates on real casework.** The dossier says so. To collect real,
   consented data, see `docs/validation/collection-protocol.md`.
 
@@ -176,7 +192,8 @@ and the workbench Score button says **Locked**.
 | `fhand synth OUT [--writers N --seed S]` | Make a labelled synthetic dataset |
 | `fhand dataset verify MANIFEST` | Check every file of a dataset against its manifest |
 | `fhand dataset build FOLDER --csv items.csv ...` | Make a manifest for a real collection |
-| `fhand validate MANIFEST --out FOLDER [--calibration FILE]` | Measure the screens (and the LRs of a calibration) and write a validation dossier |
+| `fhand dataset import FOLDER --preset cedar\|bhsig260 (or --pattern ...) ...` | Make a manifest from file names (public sets) |
+| `fhand validate MANIFEST --out FOLDER [--tasks ...] [--calibration FILE]` | Measure the screens (and the LRs of a calibration) and write a validation dossier |
 | `fhand calibrate MANIFEST --propositions skilled-forgery\|other-writer --out FILE` | Fit the writer score to a likelihood ratio |
 | `fhand prereg CALIBRATION --test MANIFEST --out FILE [--cllr-max 0.5 ...]` | Write the pass marks before the test |
 | `fhand stamp-file FILE` | Get a trusted time stamp for a file (sends one hash out) |

@@ -212,6 +212,31 @@ Scratch folder, synthetic data only, 2026-11-27.
    ("Choose exactly 5"), then gave S1: LR 1.4 (log10 +0.15), weak support for Hp. Report section 7 showed
    the crops, Hp, Hd, the LR, the verbal scale and the limits. Outside that process, this release is refused.
 
+## After Stage 4: public sets by file names, and chosen tasks (branch `feat/dataset-import`)
+
+Journey: as a validator, I want to read a public signature set (CEDAR, BHSig260 or another layout) by its
+file names, so that I can benchmark the raw writer score on real scans; the licence gate must keep such a
+research-only set away from calibration and publication.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_import.py` | `ImportError: cannot import name 'PRESETS'` (commit ca56436) |
+| GREEN | `pytest tests/test_import.py`, then the whole suite | 12 passed; whole suite: see the commit |
+
+| # | What is guaranteed | Test |
+|---|---|---|
+| 1 | A CEDAR-style folder gives writers, kinds, unique ids, the resolution and the licence; other files are ignored | `test_a_cedar_style_folder_is_read_by_its_file_names` |
+| 2 | Writer 1 and writer 001 are one writer | `test_writer_numbers_with_and_without_leading_zeros_are_one_writer` |
+| 3 | BHSig260: Bengali and Hindi writer 1 are two writers | `test_a_bhsig_style_folder_keeps_the_two_scripts_apart` |
+| 4 | Any layout works with a pattern; forger ids come from the name; other kinds are left out and counted | `test_any_naming_works_with_a_pattern_and_its_kind_words` |
+| 5 | A pattern without writer and kind, or a folder where nothing matches, is refused | `test_a_pattern_without_*`, `test_a_folder_where_nothing_matches_is_refused` |
+| 6 | 16-bit and 1-bit scans keep their ink (a plain RGB conversion turned 16-bit ink white) | `test_sixteen_bit_and_one_bit_scans_keep_their_ink` |
+| 7 | `validate --tasks writer-score` runs that task alone; unknown tasks are refused | `test_validate_can_run_the_writer_score_alone`, `test_an_unknown_task_is_refused` |
+| 8 | A research-only set can benchmark but never calibrate | `test_research_only_data_can_benchmark_but_never_calibrate` |
+| 9 | `dataset import` (with `--dry-run`) and `validate --tasks` work end to end; a manifest is never overwritten | `test_the_import_and_validate_commands` |
+
+The presets follow the usual file names of these sets. Check them against your copy with `--dry-run`.
+
 Known flaky test, not caused by Stage 4: `tests/test_server.py::test_a_large_body_is_refused` failed twice in
 full runs with a Windows `ConnectionAbortedError` (the server answers 413 before the client has sent the
 300 kB body). It passed 6 times out of 6 on its own.

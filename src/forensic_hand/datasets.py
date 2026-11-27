@@ -123,7 +123,7 @@ def check_manifest(data) -> None:
 
 
 def new_manifest(title, license_class, license_name, items, folder, consent=None, synthetic=False,
-                 generator=None, license_url=None, notes=None) -> dict:
+                 generator=None, license_url=None, notes=None, extra: dict | None = None) -> dict:
     """Make a manifest. The hash and size of each file are read from the folder now."""
     folder = Path(folder)
     full = []
@@ -138,7 +138,7 @@ def new_manifest(title, license_class, license_name, items, folder, consent=None
         "format": FORMAT, "version": VERSION, "title": title, "synthetic": bool(synthetic),
         "license": {"class": license_class, "name": license_name, "url": license_url},
         "consent": {"required": consent is not None, "records": list(consent or [])},
-        "generator": generator, "notes": notes, "items": full,
+        "generator": generator, "notes": notes, "items": full, **(extra or {}),
     }
     check_manifest(data)
     return data
@@ -276,6 +276,109 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
         items.append(item)
     manifest = new_manifest(title, license_class, license_name, items, folder, consent=consent, synthetic=False,
                             license_url=license_url, notes=notes)
+    if out:
+        save_manifest(manifest, out)
+    return manifest
+
+
+# ---------------------------------------------------------------- public sets, read by their file names
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+# Known layouts. Check that the names in your copy look like these before you rely on a preset.
+PRESETS = {
+    "cedar": {
+        "pattern": r"(?:.*/)?(?P<kind>original|forgeries)_(?P<writer>\d+)_\d+\.png",
+        "genuine": ["original"], "forgery": ["forgeries"],
+        "note": "CEDAR: full_org/original_<writer>_<n>.png and full_forg/forgeries_<writer>_<n>.png",
+    },
+    "bhsig260": {
+        "pattern": r"(?:.*/)?(?P<set>[BH])-S-(?P<writer>\d+)-(?P<kind>[GF])-\d+\.tiff?",
+        "genuine": ["G"], "forgery": ["F"],
+        "note": "BHSig260: <B or H>-S-<writer>-<G or F>-<n>.tif; Bengali (B) and Hindi (H) writers are different people",
+    },
+}
+_BAD_ID = re.compile(r"[^A-Za-z0-9._@-]")
+
+
+def _number(text: str) -> str:
+    return str(int(text)) if text.isdigit() else text
+
+
+def scan_names(folder, pattern: str, genuine, forgery) -> tuple[list[dict], dict]:
+    """Items from the paths of the pictures in a folder (and its sub-folders), read with a pattern.
+
+    The pattern is a regular expression for the whole path inside the folder, written with / between
+    folders. It needs the named groups `writer` and `kind`; `set` (written before the writer number, for
+    sets whose writers are numbered again per part) and `forger` are optional. A kind word that is in
+    neither list is left out and counted. The match ignores upper and lower case.
+    """
+    try:
+        rule = re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise DatasetError(f"the pattern is not a valid regular expression: {exc}") from exc
+    if not {"writer", "kind"} <= set(rule.groupindex):
+        raise DatasetError("the pattern needs the named groups writer and kind, for example "
+                           r"(?P<kind>original|forgeries)_(?P<writer>\d+)_\d+\.png")
+    kinds = {w.casefold(): "genuine" for w in genuine or []} | {w.casefold(): "forgery-skilled" for w in forgery or []}
+    if not kinds:
+        raise DatasetError("name the kind words for genuine signatures and for forgeries (--genuine, --forgery)")
+    folder = Path(folder)
+    items, skipped, used_ids = [], [], set()
+    for path in sorted(p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES):
+        rel = path.relative_to(folder).as_posix()
+        match = rule.fullmatch(rel)
+        kind = kinds.get(match.group("kind").casefold()) if match else None
+        if kind is None:
+            skipped.append(rel)
+            continue
+        groups = match.groupdict()
+        writer = _number(groups["writer"])
+        if groups.get("set"):
+            writer = f"{groups['set'].upper()}-{writer}"
+        item_id = _BAD_ID.sub("-", rel)[:110]
+        if not item_id[:1].isalnum():
+            item_id = f"i{item_id}"
+        base, n = item_id, 1
+        while item_id in used_ids:
+            n += 1
+            item_id = f"{base}~{n}"
+        used_ids.add(item_id)
+        item = {"item_id": item_id, "file": _safe_file(rel), "writer_id": writer, "kind": kind, "stratum": "clean",
+                "capture": "scan", "dpi": _image_dpi(path)}
+        if kind == "forgery-skilled" and groups.get("forger"):
+            item["forger_id"] = groups["forger"]
+        items.append(item)
+    if not items:
+        raise DatasetError(f"no picture in {folder} matches the pattern ({len(skipped)} picture(s) looked at)")
+    summary = {"pattern": pattern, "genuine": list(genuine or []), "forgery": list(forgery or []),
+               "matched": len(items), "skipped": len(skipped), "skipped_examples": skipped[:5],
+               "writers": len({i["writer_id"] for i in items}),
+               "genuine_items": sum(i["kind"] == "genuine" for i in items),
+               "forgery_items": sum(i["kind"] == "forgery-skilled" for i in items)}
+    return items, summary
+
+
+def build_from_names(folder, title, license_class, license_name, preset=None, pattern=None, genuine=None,
+                     forgery=None, out=None, license_url=None, notes=None, dry_run: bool = False) -> dict:
+    """Make a manifest for a set whose file names say the writer and the kind (for example a public set).
+
+    Public signature sets usually allow non-commercial research only: register them as research-only,
+    and the tool will use them for internal benchmarks only.
+    """
+    if preset is not None:
+        if preset not in PRESETS:
+            raise DatasetError(f"unknown preset {preset}; the presets are: {', '.join(PRESETS)}")
+        pattern = pattern or PRESETS[preset]["pattern"]
+        genuine = genuine or PRESETS[preset]["genuine"]
+        forgery = forgery or PRESETS[preset]["forgery"]
+    if not pattern:
+        raise DatasetError("give a preset or a pattern")
+    items, summary = scan_names(folder, pattern, genuine, forgery)
+    summary = {"preset": preset, **summary}
+    if dry_run:
+        return {"import": summary, "items": items}
+    manifest = new_manifest(title, license_class, license_name, items, folder, synthetic=False,
+                            license_url=license_url, notes=notes, extra={"import": summary})
     if out:
         save_manifest(manifest, out)
     return manifest
