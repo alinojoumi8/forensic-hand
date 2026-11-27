@@ -64,7 +64,7 @@ def test_a_run_reports_each_task_and_stratum(dossier):
     assert row["positives"]["n"] == 6 and row["negatives"]["same-writer"]["n"] == 12
     for value in (row["positives"]["warning"]["rate"], row["auc"]):
         assert 0.0 <= value <= 1.0
-    assert set(dossier["tasks"]) == {"copy-check", "blur-screen", "jpeg-estimate"}
+    assert set(dossier["tasks"]) == {"copy-check", "blur-screen", "jpeg-estimate", "writer-score"}
     assert dossier["datasets"][0]["synthetic"] is True
     assert dossier["environment"]["config_sha256"]
 
