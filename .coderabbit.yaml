@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review settings for forensic-hand.
+language: en-US
+tone_instructions: >-
+  Be direct and specific. This is an evidence tool whose output may be used in court:
+  correctness, integrity and honest limits matter more than style.
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!cases/**"
+    - "!data/**"
+    - "!marketing/**"
+  path_instructions:
+    - path: "src/forensic_hand/verify_case.py"
+      instructions: >-
+        This stand-alone checker must use the Python standard library only: it is copied into every
+        case folder so another party can run it with no install. It must fail closed: an error or an
+        unreadable file is a problem, never a pass. Check that no change lets a changed evidence file,
+        ledger, seal or time stamp pass verification.
+    - path: "src/forensic_hand/**/*.py"
+      instructions: >-
+        Focus on: integrity of evidence (ledger, seals, time stamps, read-only stored files); hostile
+        input (malformed PDFs and images, file metadata and user text that reaches HTML); resource
+        limits (huge or tricky files); Windows behavior (read-only files, paths, line endings).
+        Broad `except Exception` blocks in the screens are intentional: a broken PDF object must
+        become a finding, never a crash. Every finding must state what it does not prove. The ledger
+        records file names only, never folder paths (privacy). Network use happens only with an
+        explicit time stamp request, and only a SHA-256 digest is sent.
+    - path: "src/forensic_hand/web/**"
+      instructions: >-
+        The workbench page runs under a strict Content-Security-Policy: no inline scripts or style
+        attributes, no other origins. Every data request needs the one-time token. Check for XSS
+        (text from evidence files and users must never be inserted as HTML) and for stale async
+        results.
+    - path: "src/forensic_hand/{synth,validation,metrics,datasets}.py"
+      instructions: >-
+        Validation code. Results on synthetic data must never be presented as real error rates.
+        Licence and consent gates must not be bypassable. Results must be deterministic for a seed.
+    - path: "tests/**"
+      instructions: >-
+        Test data is synthetic. Check that each test can fail for the reason in its name, and that
+        no test hides a real failure.
+chat:
+  auto_reply: true
