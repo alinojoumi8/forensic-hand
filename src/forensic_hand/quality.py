@@ -127,17 +127,24 @@ def analyse_image(img: Image.Image, config: dict | None = None) -> dict:
     cfg = config or DEFAULTS
     width, height = img.size
     dpi = _clean_dpi(img.info.get("dpi"))
-    frames, extra_block = frame_count(img)
+    frames, problem = frame_count(img)
     metrics: dict = {
         "format": img.format, "mode": img.mode, "width": width, "height": height, "dpi": dpi,
         "frames": frames,
     }
     out: list[dict] = []
-    if extra_block:
-        out.append(finding("IMG-EXTRA-BLOCK", "info", "The file holds a block after the picture that is not a page.",
-                           detail="Scanners and cameras often store a small preview there. The tool did not read it.",
-                           limits="It is not a sign of a change by itself. The tool does not compare the block "
+    if problem == "preview":
+        out.append(finding("IMG-EXTRA-BLOCK", "info", "The file holds a small preview after the picture.",
+                           detail="It is a JPEG preview block with no size, as scanners and cameras often write. "
+                                  "The tool did not read it.",
+                           limits="It is not a sign of a change by itself. The tool does not compare the preview "
                                   "with the picture; another program can show it."))
+    elif problem == "unreadable":
+        out.append(finding("IMG-PAGE-UNREADABLE", "warning", f"The file has a page that cannot be read: page {frames + 1}.",
+                           detail=f"The screen measured page 1. {frames} page(s) could be read; pages after "
+                                  f"page {frames + 1}, if any, were not counted.",
+                           limits="Another program may open the page. An unreadable page is not a sign of a change "
+                                  "by itself."))
 
     if min(width, height) < cfg["min_side_px_warning_below"]:
         out.append(finding("IMG-SMALL", "warning", "The picture is very small.",

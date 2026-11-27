@@ -26,32 +26,45 @@ def to_8bit(img: Image.Image) -> Image.Image:
 
 
 _FRAME_ERRORS = (TypeError, ValueError, OSError, SyntaxError)
+_JPEG_PREVIEW = 513            # TIFF tag JPEGInterchangeFormat: where a JPEG preview starts
+_SIZE_TAGS = {256, 257}        # TIFF tags ImageWidth and ImageLength
 
 
-def frame_count(img: Image.Image) -> tuple[int, bool]:
-    """The pages of a picture file that can be read, and whether a block after them could not be read.
+def _is_jpeg_preview_block(img: Image.Image) -> bool:
+    """True when the TIFF block that could not be read is the last one and is a JPEG preview with no size."""
+    tags = getattr(img, "tag_v2", None)
+    if tags is None:
+        return False
+    keys = set(tags.keys())
+    return _JPEG_PREVIEW in keys and not keys & _SIZE_TAGS and not getattr(tags, "next", None)
 
-    Some scanners put a small JPEG preview after the page of a TIFF, in a block with no width or height.
-    Pillow's page count (n_frames) then raises TypeError, and it leaves the file on that broken block.
-    So count page by page instead, and go back to the page the picture was on.
+
+def frame_count(img: Image.Image) -> tuple[int, str | None]:
+    """The pages of a picture file that can be read, and what stopped the count.
+
+    The second value is None (every page was read), "preview" (after the pages comes a last TIFF block that
+    holds only a small JPEG preview with no size; some scanners write it), or "unreadable" (the page after
+    the counted ones cannot be read, and pages after it were not counted). In both cases Pillow's page
+    count (n_frames) raises an error and leaves the file on the broken block. So count page by page, and
+    go back to the page the picture was on.
     """
     start = img.tell()
     try:
-        return int(getattr(img, "n_frames", 1)), False
+        return int(getattr(img, "n_frames", 1)), None
     except _FRAME_ERRORS:
         pass
-    count, broken = 0, False
+    count, problem = 0, None
     while True:
         try:
             img.seek(count)
         except EOFError:
             break
         except _FRAME_ERRORS:
-            broken = True
+            problem = "preview" if _is_jpeg_preview_block(img) else "unreadable"
             break
         count += 1
     img.seek(start)
-    return max(count, 1), broken
+    return count, problem
 
 
 def on_white(img: Image.Image) -> Image.Image:

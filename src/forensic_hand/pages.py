@@ -93,7 +93,10 @@ def page_geometry(case, record) -> list[dict]:
         if media in IMAGE_TYPES:
             pages = []
             with Image.open(path) as img:
-                for index in range(frame_count(img)[0]):   # a preview block after the pages is not a page
+                count, problem = frame_count(img)
+                if problem == "unreadable":                # never hide the pages after it
+                    raise CaseError(f"{record['id']}: page {count + 1} of the file cannot be read")
+                for index in range(count):                 # a preview block after the pages is not a page
                     img.seek(index)
                     pages.append({"page": index + 1, "units": "px", "width": img.width, "height": img.height,
                                   "dpi": _clean_dpi(img.info.get("dpi"))})
