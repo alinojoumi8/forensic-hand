@@ -25,7 +25,9 @@ from PIL import Image
 
 from . import clones
 
-FEATURE_VERSION = 1
+# Raise the version whenever a change can alter any measure: a calibration then refuses the new scores.
+# 2: ruled lines are removed by relative lengths only (CodeRabbit review 10).
+FEATURE_VERSION = 2
 NORM_RADIUS_PX = 64       # the ink is resized to this spread before the shape measures
 LOG_RATIO_LIMIT = 2.5     # a ratio of about 12 at most, for each group
 

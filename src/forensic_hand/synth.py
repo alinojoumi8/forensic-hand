@@ -16,6 +16,7 @@ a speed profile shaped like a lognormal curve and turns smoothly from one direct
 
 from __future__ import annotations
 
+import hashlib
 import io
 import math
 from dataclasses import dataclass, field
@@ -349,7 +350,9 @@ def generate_dataset(out, writers: int = 12, genuine: int = 4, forgeries: int = 
     """Write a labelled synthetic dataset (pictures and manifest.json) to an empty folder.
 
     writer_prefix starts each writer id (w001, w002, ...). Two sets with other prefixes have no writer
-    id in common, as a calibration set and its test set must not.
+    id in common, as a calibration set and its test set must not. The prefix also changes the writers
+    themselves: the same seed with another prefix gives other people, never the same ones renamed.
+    The default prefix "w" gives the same pictures as before the prefix existed.
     """
     from . import datasets
 
@@ -367,11 +370,12 @@ def generate_dataset(out, writers: int = 12, genuine: int = 4, forgeries: int = 
         (out / name).write_bytes(png_bytes(img, img_dpi))
         items.append({"item_id": item_id, "file": name, "dpi": [img_dpi, img_dpi], "capture": "synthetic", **fields})
 
+    space = [] if writer_prefix == "w" else [int.from_bytes(hashlib.sha256(writer_prefix.encode()).digest()[:4])]
     for w in range(writers):
         wid = f"{writer_prefix}{w + 1:03d}"
-        rng = np.random.default_rng([seed, 1, w])
+        rng = np.random.default_rng([seed, 1, w, *space])
         writer = new_writer(rng)
-        pen = ("black", "blue")[int(np.random.default_rng([seed, 3, w]).integers(0, 2))]
+        pen = ("black", "blue")[int(np.random.default_rng([seed, 3, w, *space]).integers(0, 2))]
         originals = []
         for g in range(genuine):
             sid = f"{wid}-g{g + 1}"
@@ -385,7 +389,7 @@ def generate_dataset(out, writers: int = 12, genuine: int = 4, forgeries: int = 
             originals.append((sid, img, "forgery-skilled"))
         for si, stratum in enumerate(strata):
             for oi, (sid, img, kind) in enumerate(originals):
-                srng = np.random.default_rng([seed, 2, w, si, oi])
+                srng = np.random.default_rng([seed, 2, w, si, oi, *space])
                 if stratum != "clean":
                     bad, bad_dpi, params = degrade(img, dpi, stratum, srng, pen=pen)
                     save(f"{sid}@{stratum}", bad, bad_dpi, writer_id=wid, kind=kind, stratum=stratum, sample=sid,

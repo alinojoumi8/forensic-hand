@@ -105,6 +105,35 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
 .\.venv\Scripts\fhand.exe validate data\test-set\manifest.json --calibration data\cal.json --out data\lr-test
 ```
 
+- **Release (the lock).** A case can use a calibration only after a release. Write the pass marks first
+  (`prereg`), time stamp them (`stamp-file`), and only then run the test with `validate --purpose publish
+  --calibration ... --criteria ...`. Time stamp the dossier, then run `release`. It refuses if the data was
+  synthetic, if a file changed after its stamp, if the test was stamped before the pass marks, if it tested
+  other data than the marks named, if a test writer was also used to calibrate, or if any mark failed.
+  The stamps prove the order of the files; they cannot prove that nobody ran the test earlier. Keep the
+  test data unopened until the marks are stamped. The proposed marks (Cllr 0.5 or less, misleading evidence
+  for Hd 5% or less, 30 writers, 5 forgeries per writer, 2 forgers) must be confirmed with examiners.
+
+```powershell
+.\.venv\Scripts\fhand.exe prereg data\cal.json --test data\test-set\manifest.json --out data\marks.json
+```
+
+```powershell
+.\.venv\Scripts\fhand.exe stamp-file data\marks.json
+```
+
+```powershell
+.\.venv\Scripts\fhand.exe validate data\test-set\manifest.json --purpose publish --calibration data\cal.json --criteria data\marks.json --out data\test-run
+```
+
+```powershell
+.\.venv\Scripts\fhand.exe stamp-file data\test-run\dossier.json
+```
+
+```powershell
+.\.venv\Scripts\fhand.exe release --calibration data\cal.json --criteria data\marks.json --dossier data\test-run\dossier.json --out data\release.json
+```
+
 - **Synthetic results are not error rates on real casework.** The dossier says so. To collect real,
   consented data, see `docs/validation/collection-protocol.md`.
 
@@ -128,6 +157,9 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
 | `fhand dataset build FOLDER --csv items.csv ...` | Make a manifest for a real collection |
 | `fhand validate MANIFEST --out FOLDER [--calibration FILE]` | Measure the screens (and the LRs of a calibration) and write a validation dossier |
 | `fhand calibrate MANIFEST --propositions skilled-forgery\|other-writer --out FILE` | Fit the writer score to a likelihood ratio |
+| `fhand prereg CALIBRATION --test MANIFEST --out FILE [--cllr-max 0.5 ...]` | Write the pass marks before the test |
+| `fhand stamp-file FILE` | Get a trusted time stamp for a file (sends one hash out) |
+| `fhand release --calibration C --criteria M --dossier D --out FILE` | Release a calibration that passed every check |
 
 ## Check a case
 
@@ -203,6 +235,7 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 | `src/forensic_hand/synth.py`, `datasets.py`, `validation.py`, `metrics.py` | Test data, licence and consent gates, validation |
 | `src/forensic_hand/writer.py` | The measures of a signature and the raw writer score (Stage 4) |
 | `src/forensic_hand/calibrate.py` | Score to likelihood ratio: fit, bounds, calibration file (Stage 4) |
+| `src/forensic_hand/prereg.py`, `release.py` | Pass marks, file time stamps and the release gate (Stage 4) |
 
 ## License
 

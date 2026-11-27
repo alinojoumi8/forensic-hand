@@ -15,6 +15,9 @@ from .datasets import USES, DatasetError
 from .export import ExportError, export_case
 from .findings import count_levels
 from .ledger import LedgerError
+from .prereg import DEFAULT_MARKS as PASS_MARKS
+from .prereg import PreregError
+from .release import ReleaseError
 from .report import write_report
 from .seal import SealError, create_seal, timestamp_seal
 
@@ -196,13 +199,16 @@ def cmd_calibrate(args) -> int:
 
 def cmd_validate(args) -> int:
     from .calibrate import load_calibration
+    from .prereg import load_criteria
     from .validation import run_validation, write_dossier
 
     if (Path(args.out) / "dossier.json").exists():
         raise DatasetError(f"a dossier exists already in {args.out}; choose a new folder")
     calibration = load_calibration(args.calibration) if args.calibration else None
+    criteria = load_criteria(args.criteria) if args.criteria else None
     dossier = run_validation(args.manifests, purpose=args.purpose, blur_samples=args.blur_samples,
-                             jpeg_samples=args.jpeg_samples, calibration=calibration)
+                             jpeg_samples=args.jpeg_samples, calibration=calibration, criteria=criteria,
+                             config={**DEFAULTS, "score_min_known": args.min_known})
     path = write_dossier(dossier, args.out)
     copy = dossier["tasks"]["copy-check"]["all"]
     same = copy["negatives"]["same-writer"]["warning"]
@@ -224,6 +230,10 @@ def cmd_validate(args) -> int:
              f"{lr['cllr_ci95'][1]}); misleading for Hp {mis['hp']['rate']}, for Hd {mis['hd']['rate']}")
         if lr["writers_overlap"]:
             _say(f"Warning: {len(lr['writers_overlap'])} writer(s) were also used to calibrate: not a fair test.")
+    marks = dossier.get("pass_marks")
+    if marks:
+        failed = [r["mark"] for r in marks["results"] if not r["pass"]]
+        _say("Pass marks: all passed." if marks["passed"] else f"Pass marks: FAILED: {', '.join(failed) or 'no test'}")
     _say(f"Results hash: {dossier['results_sha256']}")
     _say(f"Dossier: {path}")
     flags = [d["synthetic"] for d in dossier["datasets"]]
@@ -231,6 +241,50 @@ def cmd_validate(args) -> int:
         _say("Synthetic data only: not error rates on real casework.")
     elif any(flags):
         _say("Real and synthetic data are mixed: the pooled numbers are not real error rates.")
+    return 0
+
+
+def cmd_prereg(args) -> int:
+    from .calibrate import load_calibration
+    from .prereg import DEFAULT_MARKS, save_criteria, write_criteria
+
+    marks = {name: getattr(args, name) for name in DEFAULT_MARKS}
+    body = write_criteria(load_calibration(args.calibration), args.test, marks, note=args.note)
+    save_criteria(body, args.out)
+    _say(f"Pass marks: {args.out}")
+    for name, value in marks.items():
+        _say(f"  {name}: {value}")
+    _say("Next: time stamp this file now, before you run the test:")
+    _say(f"  fhand stamp-file {args.out}")
+    return 0
+
+
+def cmd_stamp_file(args) -> int:
+    from .prereg import stamp_file
+
+    done = stamp_file(args.file, url=args.tsa_url)
+    _say(f"Time stamp: {done['gen_time']} from {done['tsa_url']} (only the file hash was sent)")
+    _say(f"Saved: {done['file']}")
+    if done["signature_check"] == "ok":
+        _say(f"Signature: checked ({done['signature_detail']})")
+    else:
+        _say(f"Signature: NOT checked: {done['signature_detail']}. A release needs a checked signature.")
+    return 0
+
+
+def cmd_release(args) -> int:
+    from .release import make_release, save_release
+
+    if Path(args.out).exists():
+        raise ReleaseError(f"the file exists already; choose a new name: {args.out}")
+    bundle = make_release(args.calibration, args.criteria, args.dossier)
+    save_release(bundle, args.out)
+    facts = bundle["facts"]
+    _say(f"Pass marks stamped {facts['criteria_stamp']['gen_time']}; test stamped {facts['dossier_stamp']['gen_time']}")
+    for r in facts["marks"]:
+        _say(f"  pass  {r['text']} {r['limit']}: {r['value'] if r['value'] is not None else r.get('note')}")
+    _say(f"Released: {args.out}")
+    _say("A case can use this file with: fhand score <case> --release " + str(args.out))
     return 0
 
 
@@ -386,6 +440,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--blur-samples", type=int, default=12)
     p.add_argument("--jpeg-samples", type=int, default=12)
     p.add_argument("--calibration", help="also measure the LRs of this calibration file on the data")
+    p.add_argument("--criteria", help="pass marks file (fhand prereg) to record and check in the dossier")
+    p.add_argument("--min-known", type=int, default=DEFAULTS["score_min_known"],
+                   help="known signatures per comparison for the raw writer score (default: %(default)s)")
     p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("calibrate", help="fit the writer score to a likelihood ratio (Stage 4)")
@@ -397,6 +454,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-known", type=int, default=DEFAULTS["score_min_known"],
                    help="known signatures per comparison (default: %(default)s)")
     p.set_defaults(func=cmd_calibrate)
+
+    p = sub.add_parser("prereg", help="write the pass marks for a calibration before its test (Stage 4)")
+    p.add_argument("calibration", help="the calibration file to test")
+    p.add_argument("--test", nargs="+", required=True, metavar="MANIFEST", help="the test data (not yet opened)")
+    p.add_argument("--out", required=True, help="new pass marks file (JSON)")
+    p.add_argument("--note", help="free text, for example who agreed the marks")
+    for name, value in PASS_MARKS.items():
+        p.add_argument(f"--{name.replace('_', '-')}", dest=name, type=type(value), default=value,
+                       help=f"(default: {value})")
+    p.set_defaults(func=cmd_prereg)
+
+    p = sub.add_parser("stamp-file", help="get a trusted time stamp for a file (sends one hash out)")
+    p.add_argument("file")
+    with_tsa(p)
+    p.set_defaults(func=cmd_stamp_file)
+
+    p = sub.add_parser("release", help="check a calibration against its stamped pass marks and test (Stage 4)")
+    p.add_argument("--calibration", required=True)
+    p.add_argument("--criteria", required=True, help="the pass marks file; its stamp is <file>.tsr")
+    p.add_argument("--dossier", required=True, help="the test dossier.json; its stamp is dossier.json.tsr")
+    p.add_argument("--out", required=True, help="new release file (JSON)")
+    p.set_defaults(func=cmd_release)
     return parser
 
 
@@ -411,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args)
-    except (CaseError, ExportError, LedgerError, DatasetError, CalibrationError) as exc:
+    except (CaseError, ExportError, LedgerError, DatasetError, CalibrationError, PreregError, ReleaseError) as exc:
         _error(str(exc))
         return 2
     except SealError as exc:

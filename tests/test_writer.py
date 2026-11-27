@@ -206,6 +206,29 @@ def test_clean_items_may_carry_a_sample_name_that_differs_from_their_id(writer_s
            {s: {k: len(v) for k, v in row.items()} for s, row in pairs_b.items()}
 
 
+def test_a_degraded_item_may_name_its_original_by_the_original_s_sample_name(writer_set):
+    # CodeRabbit review 11: clean "C1" has sample "S1"; its blurred scan says sample "S1". Both must pair.
+    data = json.loads(writer_set.read_text(encoding="utf-8"))
+    alias = {}
+    for item in data["items"]:
+        if item["stratum"] == "clean":
+            alias[item["item_id"]] = item["sample"] = f"alias-{item['item_id']}"
+    for item in data["items"]:
+        if item["stratum"] != "clean" and item.get("sample") in alias:
+            item["sample"] = alias[item["sample"]]
+    renamed = writer_set.with_name("manifest-alias.json")
+    renamed.write_text(json.dumps(data), encoding="utf-8")
+    cfg = {**DEFAULTS, "score_min_known": 3}
+    original, other = load_manifest(writer_set), load_manifest(renamed)
+
+    def sizes(rows):
+        return {s: {k: len(v) for k, v in row.items()} for s, row in rows.items()}
+
+    assert sizes(score_comparisons([(original, original.items)], cfg)) == \
+           sizes(score_comparisons([(other, other.items)], cfg))
+    assert sizes(_copy_pairs(original.items)) == sizes(_copy_pairs(other.items))
+
+
 def test_the_dossier_explains_that_the_writer_score_is_raw(writer_dossier):
     html = dossier_html(writer_dossier)
     assert "Writer score" in html and "not a likelihood ratio" in html

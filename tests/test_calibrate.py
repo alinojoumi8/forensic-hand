@@ -181,6 +181,36 @@ def test_a_changed_calibration_file_is_refused(tmp_path, calibration):
         cal.load_calibration(path)
 
 
+def test_saving_never_replaces_an_existing_calibration(tmp_path, calibration):
+    # CodeRabbit review 11: the file is created exclusively, so a second run cannot overwrite the first.
+    path = tmp_path / "cal.json"
+    cal.save_calibration(calibration, path)
+    first = path.read_bytes()
+    with pytest.raises(cal.CalibrationError, match="exists already"):
+        cal.save_calibration({**calibration, "status": "candidate"}, path)
+    assert path.read_bytes() == first
+
+
+def test_a_calibration_of_an_older_feature_version_is_refused(calibration):
+    # CodeRabbit review 11: the measures changed in review 10, so the feature version went up to 2.
+    assert calibration["score_settings"]["feature_version"] == 2
+    old = {**calibration, "score_settings": {**calibration["score_settings"], "feature_version": 1}}
+    with pytest.raises(cal.CalibrationError, match="feature version"):
+        cal.apply(old, 0.0)
+
+
+def test_the_same_seed_with_another_writer_prefix_gives_other_writers(tmp_path):
+    # CodeRabbit review 11: a new prefix must not hide the same writers under new ids.
+    a = synth.generate_dataset(tmp_path / "a", writers=1, genuine=1, forgeries=0, seed=9, strata=("clean",),
+                               writer_prefix="a")
+    b = synth.generate_dataset(tmp_path / "b", writers=1, genuine=1, forgeries=0, seed=9, strata=("clean",),
+                               writer_prefix="b")
+    w1 = synth.generate_dataset(tmp_path / "w1", writers=1, genuine=1, forgeries=0, seed=9, strata=("clean",))
+    w2 = synth.generate_dataset(tmp_path / "w2", writers=1, genuine=1, forgeries=0, seed=9, strata=("clean",))
+    assert a["items"][0]["sha256"] != b["items"][0]["sha256"]
+    assert w1["items"][0]["sha256"] == w2["items"][0]["sha256"]       # the default prefix is unchanged
+
+
 def test_a_calibration_of_other_settings_is_refused(calibration):
     with pytest.raises(cal.CalibrationError, match="settings"):
         cal.apply(calibration, 0.0, config={**CFG, "clone_ink_hue_deg": 30})

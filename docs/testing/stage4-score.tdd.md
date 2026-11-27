@@ -11,7 +11,11 @@ All data in these tests is synthetic. It proves the logic. It is not proof on re
    so that I can say in court what the tool measured.
 3. As a validator, I want to turn the raw score into a likelihood ratio on data whose licence and
    consent allow it, and to measure that LR on other writers, so that its error rates are known.
-4. (Phases 3 and 4 add their journeys below.)
+4. As a validator, I want to write my pass marks and time stamp them before the test, so that
+   nobody can choose the marks after seeing the results.
+5. As the other side's expert, I want a release file that holds every file of the test, so that I
+   can run the same release checks again.
+6. (Phase 4 adds its journeys below.)
 
 ## Phase 1: measures and raw score (branch `feat/stage4-writer-score`)
 
@@ -87,6 +91,45 @@ clean. Phase 4 must refuse a case that is outside the conditions that the calibr
 | 13 | Strata outside the calibration are not measured; reused writers are reported | `test_strata_outside_the_calibration_are_not_measured`, `test_writers_used_to_calibrate_are_reported_when_they_are_tested_again` |
 | 14 | The dossier shows the LR section, the demo banner and a Tippett plot | `test_the_dossier_shows_the_lr_section_with_a_tippett_plot` |
 | 15 | `calibrate` and `validate --calibration` work end to end; an existing file is not overwritten | `test_the_calibrate_and_validate_commands` |
+
+### CodeRabbit review 11 (review 10 fixes and phase 2): 4 findings, all fixed on the phase 3 branch
+
+| Finding | Fix | Test (RED, then GREEN) |
+|---|---|---|
+| Two runs could overwrite one calibration file | New files are created exclusively (`calibrate.write_new`), also pass marks, stamps and releases | `test_saving_never_replaces_an_existing_calibration` (RED: did not raise) |
+| A degraded item that names its original by the original's sample name lost its pairs | `validation.origins` maps a sample name to the clean item's id (an id wins over a name) | `test_a_degraded_item_may_name_its_original_by_the_original_s_sample_name` (RED: blur and stamp strata missing) |
+| The same seed with another writer prefix gave the same writers under new ids | The prefix (other than the default "w") goes into the random seed of each writer | `test_the_same_seed_with_another_writer_prefix_gives_other_writers` (RED: equal picture hashes) |
+| The measures changed in review 10, but the feature version stayed 1 | `FEATURE_VERSION = 2`; an older calibration is refused | `test_a_calibration_of_an_older_feature_version_is_refused` (RED: version 1) |
+
+## Phase 3: pass marks and release (branch `feat/stage4-release`)
+
+The plan put the release gate in `calibrate.py`; it got its own module, `release.py`. The pass marks are
+in `prereg.py`. Some tests mark a synthetic set as real in its manifest, to reach the checks after the
+"synthetic data" refusal. That proves the logic of the gate only. The time stamps in the tests are fake
+tokens from an independent library, and their signature check is patched in `test_release.py` only.
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_release.py` on the phase 2 code | `ImportError: cannot import name 'prereg'` |
+| GREEN | `pytest tests/test_release.py` | 17 passed |
+| Lint | `ruff check src tests` | all checks passed |
+
+| # | What is guaranteed | Test |
+|---|---|---|
+| 1 | The pass marks name the calibration, the test data and every mark; unknown marks are refused | `test_pass_marks_name_*`, `test_an_unknown_mark_is_refused` |
+| 2 | The proposed marks are the plan values | `test_the_proposed_marks_are_the_plan_values` |
+| 3 | The dossier records the pass-marks hash and how each mark went | `test_the_dossier_records_the_pass_marks_and_how_each_one_went` |
+| 4 | A release holds the exact bytes of all five files, and its checks can be run again | `test_a_release_needs_every_check_to_pass_and_holds_every_file` |
+| 5 | Refused: a demo calibration | `test_a_demo_calibration_is_never_released` |
+| 6 | Refused: a test stamped before the pass marks | `test_pass_marks_stamped_after_the_test_are_refused` |
+| 7 | Refused: pass marks or a dossier changed after their stamp | `test_pass_marks_changed_after_their_stamp_are_refused`, `test_a_changed_dossier_is_refused` |
+| 8 | Refused: a stamp signature that cannot be checked | `test_a_signature_that_cannot_be_checked_stops_the_release` |
+| 9 | Refused: a test on the writers used to calibrate | `test_a_test_on_the_writers_used_to_calibrate_is_refused` |
+| 10 | Refused: a failed pass mark; a test without forger ids (min_forgers) | `test_a_failed_pass_mark_is_refused`, `test_a_test_without_forger_ids_fails_the_forger_mark` |
+| 11 | Refused: a dossier made for benchmark use only | `test_a_dossier_made_for_internal_benchmarks_only_is_refused` |
+| 12 | Refused: a release file changed after the release | `test_a_changed_release_file_is_refused` |
+| 13 | Forger ids come from the collection spreadsheet | `test_forger_ids_come_from_the_collection_spreadsheet` |
+| 14 | `prereg`, `stamp-file`, `validate --criteria` and `release` work end to end; a demo is refused | `test_the_prereg_stamp_validate_and_release_commands` |
 
 Known flaky test, not caused by Stage 4: `tests/test_server.py::test_a_large_body_is_refused` failed twice in
 full runs with a Windows `ConnectionAbortedError` (the server answers 413 before the client has sent the

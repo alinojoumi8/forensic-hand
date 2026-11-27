@@ -65,12 +65,25 @@ def _open(manifest, item) -> Image.Image:
         return img.copy()
 
 
-def _origin(item: dict) -> str:
-    """The clean original an item was made from. A clean item is its own original; a degraded item names
-    its original in `sample` (see datasets.build_from_csv)."""
-    if item["stratum"] == "clean":
-        return item["item_id"]
-    return item.get("sample") or item["item_id"]
+def origins(items: list[dict]) -> dict[str, str]:
+    """For each item id: the id of the clean original it was made from.
+
+    A clean item is its own original. A degraded item names its original in `sample`: by the original's
+    item id (see datasets.build_from_csv), or by the original's own sample name. An id wins over a name.
+    """
+    clean = {i["item_id"] for i in items if i["stratum"] == "clean"}
+    names: dict[str, str] = {}
+    for i in items:
+        if i["stratum"] == "clean" and i.get("sample") and i["sample"] not in clean:
+            names.setdefault(i["sample"], i["item_id"])
+    out = {}
+    for i in items:
+        if i["stratum"] == "clean":
+            out[i["item_id"]] = i["item_id"]
+        else:
+            name = i.get("sample") or i["item_id"]
+            out[i["item_id"]] = name if name in clean else names.get(name, name)
+    return out
 
 
 # ---------------------------------------------------------------- copy check
@@ -79,7 +92,8 @@ def _copy_pairs(items: list[dict]) -> dict[str, dict[str, list[tuple[str, str]]]
     """Pairs per stratum: positives (original, copy) and three kinds of negatives."""
     originals = sorted((i for i in items if i["stratum"] == "clean" and i["kind"] in ("genuine", "forgery-skilled")),
                        key=lambda i: i["item_id"])
-    questioned = {(_origin(i), i["stratum"]): i["item_id"]
+    origin = origins(items)
+    questioned = {(origin[i["item_id"]], i["stratum"]): i["item_id"]
                   for i in items if i["kind"] in ("genuine", "forgery-skilled")}
     by_id = {i["item_id"]: i for i in items}
     writers = sorted({i["writer_id"] for i in originals})
@@ -216,7 +230,9 @@ def score_comparisons(sets, cfg: dict) -> dict[str, dict[str, list]]:
                 genuine.setdefault(item["writer_id"], []).append(item)
             elif item["kind"] == "forgery-skilled":
                 forged.setdefault(item["writer_id"], []).append(item)
-        questioned = {(_origin(i), i["stratum"]): i for i in items if i["kind"] in ("genuine", "forgery-skilled")}
+        origin = origins(items)
+        questioned = {(origin[i["item_id"]], i["stratum"]): i for i in items
+                      if i["kind"] in ("genuine", "forgery-skilled")}
         strata = sorted({i["stratum"] for i in items})
         writers = sorted(w for w, g in genuine.items() if len(g) >= k + 1)
         for wi, w in enumerate(writers):
@@ -264,6 +280,15 @@ def writer_score_task(sets, cfg: dict) -> dict:
 
 # ---------------------------------------------------------------- likelihood ratio
 
+def _forgers(sets, strata, writers) -> int | None:
+    """Different people who made the skilled forgeries in the test. None when any forgery has no forger id."""
+    forgeries = [i for _, items in sets for i in items
+                 if i["kind"] == "forgery-skilled" and i["stratum"] in strata and i["writer_id"] in set(writers)]
+    if not forgeries or any(not i.get("forger_id") for i in forgeries):
+        return None
+    return len({i["forger_id"] for i in forgeries})
+
+
 def lr_task(sets, cfg: dict, calibration: dict) -> dict:
     """Apply a calibration to new data and measure how good its LRs are."""
     from . import calibrate as cal
@@ -307,10 +332,13 @@ def lr_task(sets, cfg: dict, calibration: dict) -> dict:
     value = metrics.cllr(same, diff)
     minimum = metrics.cllr_min([x for _, y, _, x in rows if y == 1], [x for _, y, _, x in rows if y == 0])
     writers = sorted({w for w, *_ in rows})
+    hd_per_writer = {w: sum(1 for w2, y, *_ in rows if w2 == w and y == 0) for w in writers}
     return {
         **head,
         "pairs": {"same": len(same), "different": len(diff)},
         "writers": len(writers),
+        "hd_pairs_min_per_writer": min(hd_per_writer.values()),
+        "forgers": _forgers(sets, scores["strata"], writers) if prop == "skilled-forgery" else None,
         "writers_overlap": sorted(set(writers) & set(calibration["data"]["writers"])),
         "cllr": _r(value), "cllr_min": _r(minimum), "cllr_cal": _r(value - minimum),
         "cllr_ci95": [_r(v) for v in metrics.bootstrap(rows, boot_cllr)],
@@ -319,6 +347,18 @@ def lr_task(sets, cfg: dict, calibration: dict) -> dict:
                                                                     calibration["model"]["upper"])) / len(rows)),
         "tippett": {"same": sorted(round(v, 4) for v in same), "different": sorted(round(v, 4) for v in diff)},
     }
+
+
+def pass_marks_record(criteria, calibration: dict, dossier: dict) -> dict:
+    """How each pre-registered pass mark went. The release (release.py) checks the same again."""
+    from .prereg import evaluate
+
+    if criteria["calibration_sha256"] != calibration["results_sha256"]:
+        raise DatasetError("the pass marks are for another calibration")
+    lr = dossier["tasks"]["lr"]
+    results = [] if lr.get("skipped") else evaluate(criteria["marks"], lr)
+    return {"criteria_sha256": criteria.sha256, "marks": criteria["marks"], "results": results,
+            "passed": bool(results) and all(r["pass"] for r in results)}
 
 
 # ---------------------------------------------------------------- quality screens
@@ -390,7 +430,8 @@ def _results_hash(dossier: dict) -> str:
 
 
 def run_validation(manifest_paths, purpose: str = "benchmark", config: dict | None = None,
-                   blur_samples: int = 12, jpeg_samples: int = 12, calibration: dict | None = None) -> dict:
+                   blur_samples: int = 12, jpeg_samples: int = 12, calibration: dict | None = None,
+                   criteria=None) -> dict:
     cfg = dict(config or DEFAULTS)
     sets, described = [], []
     for path in manifest_paths:
@@ -420,8 +461,12 @@ def run_validation(manifest_paths, purpose: str = "benchmark", config: dict | No
         "limits": LIMITS,
         "generated_claimed": utc_now(),
     }
+    if criteria is not None and calibration is None:
+        raise DatasetError("pass marks need a calibration to test (--calibration)")
     if calibration is not None:
         dossier["tasks"]["lr"] = lr_task(sets, cfg, calibration)
+    if criteria is not None:
+        dossier["pass_marks"] = pass_marks_record(criteria, calibration, dossier)
     dossier["results_sha256"] = _results_hash(dossier)
     return dossier
 
@@ -561,6 +606,18 @@ def _lr_html(task: dict) -> str:
     return "".join(parts)
 
 
+def _marks_html(record: dict) -> str:
+    verdict = "All pass marks passed." if record["passed"] else "Not every pass mark passed."
+    rows = "".join(
+        f"<tr><td>{_e(r['text'])}</td><td class='n'>{_e(r['limit'])}</td>"
+        f"<td class='n'>{_e(r['value'] if r['value'] is not None else r.get('note'))}</td>"
+        f"<td>{'pass' if r['pass'] else '<strong>fail</strong>'}</td></tr>" for r in record["results"])
+    return ("<h2>Pass marks</h2><p class='muted'>Pass marks SHA-256 <span class='mono'>"
+            f"{_e(record['criteria_sha256'])}</span>. A release also checks that these marks were time stamped "
+            f"before this dossier.</p><p><strong>{_e(verdict)}</strong></p><div class='scroll'><table><tr>"
+            f"<th>Mark</th><th>Limit</th><th>Value</th><th>Result</th></tr>{rows}</table></div>")
+
+
 def dossier_html(d: dict) -> str:
     parts = []
     add = parts.append
@@ -613,6 +670,8 @@ def dossier_html(d: dict) -> str:
         add(_writer_html(d["tasks"]["writer-score"]))
     if "lr" in d["tasks"]:
         add(_lr_html(d["tasks"]["lr"]))
+    if d.get("pass_marks"):
+        add(_marks_html(d["pass_marks"]))
 
     blur = d["tasks"]["blur-screen"]
     add(f"<h2>Blur screen</h2><p class='muted'>{_e(blur['method'])}; {_e(blur['samples'])} signature(s).</p>"

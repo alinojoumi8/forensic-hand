@@ -66,7 +66,9 @@ separates inks by colour, and its hue rule was set on synthetic inks only.
 .\.venv\Scripts\fhand.exe dataset build D:\data\pilot --csv D:\data\pilot\items.csv --consent D:\data\pilot\consent.csv --title "Pilot collection 2027" --license-class own --license-name "Own collection under consent"
 ```
 
-`items.csv` columns: `file, writer_id, kind, stratum, consent_id, capture, source_item, item_id, sample`.
+`items.csv` columns: `file, writer_id, kind, stratum, consent_id, capture, source_item, item_id, sample, forger_id`.
+For a skilled forgery, `writer_id` is the person whose signature is imitated, and `forger_id` is a
+pseudonymous id of the person who made it. A release needs forgeries by 2 or more forgers.
 For a degraded version of an item (for example the same sheet scanned at 150 DPI, `stratum` `dpi150`),
 set `sample` to the `item_id` of the clean original. The validation uses this link to pair items.
 `consent.csv` columns: `consent_id, scopes, date, withdrawn` (scopes separated by `;`).
@@ -81,7 +83,20 @@ Then check it and run the validation:
 .\.venv\Scripts\fhand.exe validate D:\data\pilot\manifest.json --out D:\data\pilot-validation --purpose publish
 ```
 
-## 7. Data that must not be used
+## 7. Split, pass marks, then the test (Stage 4)
+
+1. Before you look at any results, split the writers into two groups: one to calibrate (consent scope
+   `calibrate`) and one to test (consent scope `publish`). No writer may be in both. Make one manifest each.
+2. Run `fhand calibrate` on the first group only.
+3. Write the pass marks with `fhand prereg` and stamp them with `fhand stamp-file`. Agree the marks with
+   practising examiners first. Do not open the test data before the stamp.
+4. Run `fhand validate --purpose publish --calibration ... --criteria ...` on the test group, stamp the
+   dossier, and run `fhand release`.
+
+Sizes: the proposed pass marks ask for 30 or more writers in the test group, 5 or more skilled forgeries
+per writer, and 2 or more forgers. The calibration group should be at least as large.
+
+## 8. Data that must not be used
 
 Most academic signature sets (for example GPDS-Synthetic, MCYT-75, and common copies of CEDAR and
 BHSig260) allow non-commercial research only. Register such a set with `--license-class research-only`.

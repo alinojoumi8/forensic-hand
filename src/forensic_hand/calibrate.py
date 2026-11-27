@@ -200,8 +200,18 @@ def calibrate(manifest_paths, propositions: str, config: dict | None = None, str
     return body
 
 
+def write_new(path, data: bytes, error) -> None:
+    """Write a new file. Never replace one: two runs that pick the same name cannot overwrite each other."""
+    try:
+        with open(path, "xb") as handle:
+            handle.write(data)
+    except FileExistsError as exc:
+        raise error(f"the file exists already; choose a new name: {path}") from exc
+
+
 def save_calibration(body: dict, path) -> None:
-    Path(path).write_text(json.dumps(body, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="utf-8")
+    data = (json.dumps(body, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii")
+    write_new(path, data, CalibrationError)
 
 
 def load_calibration(path) -> dict:

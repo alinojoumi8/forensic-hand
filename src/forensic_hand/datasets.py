@@ -83,6 +83,8 @@ def _check_item(item, seen: set) -> None:
         raise DatasetError(f"{item_id}: kind must be one of {', '.join(sorted(KINDS))}")
     if not isinstance(item.get("stratum"), str) or not item["stratum"]:
         raise DatasetError(f"{item_id}: missing stratum")
+    if "forger_id" in item and (not isinstance(item["forger_id"], str) or not item["forger_id"]):
+        raise DatasetError(f"{item_id}: forger_id must be a non-empty text (a pseudonymous id of the forger)")
 
 
 def check_manifest(data) -> None:
@@ -221,7 +223,7 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
     """Make a manifest for a real collection from a spreadsheet saved as CSV.
 
     items.csv columns: file, writer_id, kind, and optional stratum, consent_id, capture, source_item, item_id,
-    sample. Set `sample` on a degraded item (for example a blurred scan) to the item_id of its clean original,
+    sample, forger_id (who made a skilled forgery; writer_id is the person whose signature it imitates). Set `sample` on a degraded item (for example a blurred scan) to the item_id of its clean original,
     so that the validation can pair it; a clean original needs no sample.
     consent.csv columns: consent_id, scopes (separated by ;), date, withdrawn (yes or no).
     Use pseudonymous writer ids. Keep the list of real names somewhere else.
@@ -251,7 +253,7 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
             "capture": (row.get("capture") or "").strip() or None,
             "dpi": _image_dpi(folder / name),
         }
-        for key in ("consent_id", "source_item", "sample"):
+        for key in ("consent_id", "source_item", "sample", "forger_id"):
             if (row.get(key) or "").strip():
                 item[key] = row[key].strip()
         items.append(item)
