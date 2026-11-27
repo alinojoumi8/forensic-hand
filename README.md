@@ -174,3 +174,21 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 | `src/forensic_hand/config.py` | The screening values. Each run records them in the log |
 | `src/forensic_hand/pages.py`, `work.py`, `clones.py`, `exhibit.py` | Pages, crops, notes, measurements, copy check, charts |
 | `src/forensic_hand/server.py`, `web/` | The local workbench server and the browser screen |
+
+## License
+
+Copyright (C) 2026 alinojoumi8.
+
+forensic-hand is free software under the GNU Affero General Public License, version 3 or later
+(AGPL-3.0-or-later). See `LICENSE`. In short: you may use, study, change and share it. If you share a
+changed version, or offer it to others over a network, you must publish your changed source code under
+the same license.
+
+For a commercial license without these terms, contact the copyright holder.
+
+Third-party parts keep their own licenses: Pillow (MIT-CMU), NumPy (BSD-3-Clause), pikepdf (MPL-2.0),
+pypdfium2 and PDFium (Apache-2.0 / BSD-3-Clause).
+
+This tool supports a qualified examiner. It is not a verdict tool, and it comes with no warranty
+(see sections 15 and 16 of the license).
+
