@@ -16,7 +16,13 @@ import threading
 import numpy as np
 import pikepdf
 import pytest
-from conftest import is_read_only, make_stroke_image, save_image, tiff_with_preview_block
+from conftest import (
+    is_read_only,
+    make_stroke_image,
+    save_image,
+    tiff_with_preview_block,
+    tiff_with_unreadable_page,
+)
 from PIL import Image, ImageDraw
 
 from forensic_hand import verify_case as vc
@@ -110,6 +116,14 @@ def test_a_tiff_with_a_preview_block_has_one_page(tmp_path):
     rec = case.add_evidence(tiff_with_preview_block(tmp_path / "scan.tif"), role="questioned")
     assert page_geometry(case, rec) == [{"page": 1, "units": "px", "width": 1200, "height": 800, "dpi": [300, 300]}]
     assert render_preview(case, rec, page=1, width=300).size == (300, 200)
+
+
+def test_an_unreadable_page_is_never_hidden_from_the_page_list(tmp_path):
+    # CodeRabbit review 18: listing page 1 only would hide page 2 and page 3.
+    case = Case.create(tmp_path / "c", title="t")
+    rec = case.add_evidence(tiff_with_unreadable_page(tmp_path / "three.tif"), role="questioned")
+    with pytest.raises(CaseError, match="page 2"):
+        page_geometry(case, rec)
 
 
 def test_preview_has_the_asked_width_and_page_shape(wcase):

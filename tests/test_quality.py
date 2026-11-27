@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from conftest import make_stroke_image, save_image, tiff_with_preview_block
+from conftest import make_stroke_image, save_image, tiff_with_preview_block, tiff_with_unreadable_page
 from PIL import Image
 
 from forensic_hand.quality import analyse_image_file, edge_sharpness, estimate_jpeg_quality
@@ -102,6 +102,15 @@ def test_a_tiff_with_a_preview_block_is_screened(tmp_path):
     codes = _codes(result)
     assert codes.get("IMG-EXTRA-BLOCK") == "info" and "IMG-UNREADABLE" not in codes
     assert all(f["limits"] for f in result["findings"])
+
+
+def test_an_unreadable_page_is_a_warning_not_a_preview(tmp_path):
+    # CodeRabbit review 18: only a last block with just a JPEG preview may be called a preview.
+    result = analyse_image_file(tiff_with_unreadable_page(tmp_path / "three.tif"))
+    codes = _codes(result)
+    assert codes.get("IMG-PAGE-UNREADABLE") == "warning" and "IMG-EXTRA-BLOCK" not in codes
+    page = next(f for f in result["findings"] if f["code"] == "IMG-PAGE-UNREADABLE")
+    assert "page 2" in page["title"] and page["limits"]
 
 
 def test_a_two_page_tiff_still_counts_two_pages(tmp_path):

@@ -85,6 +85,27 @@ def tiff_with_preview_block(path: Path, img: Image.Image | None = None) -> Path:
     return path
 
 
+def tiff_with_unreadable_page(path: Path) -> Path:
+    """A three-page TIFF whose page 2 has a pixel format Pillow does not know (photometric 65535).
+
+    Pillow raises SyntaxError for that page. It is a real page, not a preview, so it must not be hidden.
+    """
+    pages = [make_stroke_image() for _ in range(3)]
+    buf = io.BytesIO()
+    pages[0].save(buf, format="TIFF", save_all=True, append_images=pages[1:], dpi=(300, 300))
+    data = bytearray(buf.getvalue())
+    order = "<" if data[:2] == b"II" else ">"
+    ifd = struct.unpack(order + "I", data[4:8])[0]
+    ifd = struct.unpack(order + "I", data[ifd + 2 + 12 * struct.unpack(order + "H", data[ifd:ifd + 2])[0]:][:4])[0]
+    for n in range(struct.unpack(order + "H", data[ifd:ifd + 2])[0]):
+        entry = ifd + 2 + 12 * n
+        if struct.unpack(order + "H", data[entry:entry + 2])[0] == 262:      # PhotometricInterpretation
+            data[entry + 8:entry + 10] = struct.pack(order + "H", 65535)
+            path.write_bytes(bytes(data))
+            return path
+    raise AssertionError("no photometric tag on page 2")
+
+
 def save_image(path: Path, img: Image.Image, **kw) -> Path:
     img.save(path, **kw)
     return path
