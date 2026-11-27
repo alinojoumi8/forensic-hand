@@ -248,6 +248,10 @@ The presets follow the usual file names of these sets. Check them against your c
 
 Whole suite after these fixes: all pass, 2 network tests skipped. Ruff: all checks passed.
 
+### CodeRabbit review 16 (the review 15 fixes): 0 findings
+
+The first run hit the rate limit (wait 11 minutes); the rerun completed with no findings.
+
 Known flaky test, not caused by Stage 4: `tests/test_server.py::test_a_large_body_is_refused` failed twice in
 full runs with a Windows `ConnectionAbortedError` (the server answers 413 before the client has sent the
 300 kB body). It passed 6 times out of 6 on its own.
