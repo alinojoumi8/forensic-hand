@@ -286,3 +286,45 @@ Check on real data (not a fixture): the SOHI set (3,936 pictures) imported with 
 `--out data/results/...` was refused with exit 2 and wrote nothing. The check manifest was then removed.
 
 ### CodeRabbit review 17 (this fix): 0 findings
+
+## Fix: a TIFF with a JPEG preview block crashed intake
+
+Found while testing the public CVL database: 91 of its 1,604 TIFF scans hold a second block with only a small
+JPEG preview (tags 259, 513, 514; no width or height). Pillow's page count (`n_frames`) raises
+`TypeError: Missing dimensions` and leaves the file on that block. The picture screen (`quality.analyse_image`)
+and the workbench page list (`pages.page_geometry`) did not catch it. A real `fhand intake` with one of these
+files added the file, then crashed with exit code 1: no check, no seal, no report.
+
+The fix: `imaging.frame_count` counts the readable pages. When `n_frames` fails, it counts page by page and goes
+back to the start page. It says why the count stopped:
+- `"preview"`: the broken block is the last one, has a JPEG preview (tag 513) and no width or height. The screen
+  gives the info note `IMG-EXTRA-BLOCK`; the page list shows the readable pages.
+- `"unreadable"`: any other broken page. The screen gives the warning `IMG-PAGE-UNREADABLE`; the page list
+  refuses the file, as before, so pages after it are never hidden.
+
+| # | What is guaranteed | Test | RED | GREEN |
+|---|---|---|---|---|
+| 1 | A TIFF with a preview block is screened; page 1 measures the same as without the block | `test_a_tiff_with_a_preview_block_is_screened` | TypeError | PASS |
+| 2 | A two-page TIFF still counts two pages | `test_a_two_page_tiff_still_counts_two_pages` | (guard) PASS | PASS |
+| 3 | The page list shows one page for a preview TIFF, and the preview renders | `test_a_tiff_with_a_preview_block_has_one_page` | CaseError | PASS |
+| 4 | `fhand intake` of a preview TIFF finishes: report, seal, `verify` OK | `test_intake_of_a_tiff_with_a_preview_block_finishes` | TypeError | PASS |
+| 5 | An unreadable page 2 is a warning, never a preview note | `test_an_unreadable_page_is_a_warning_not_a_preview` | no warning | PASS |
+| 6 | The page list refuses a file with an unreadable page 2 (never hides pages 2 and 3) | `test_an_unreadable_page_is_never_hidden_from_the_page_list` | did not raise | PASS |
+
+Tests 5 and 6 came from CodeRabbit review 18. Full suite: 445 passed, 2 skipped. Ruff: all checks passed.
+
+Check on real data (not a fixture): the picture screen on all 1,604 CVL pages gave 91 crashes before the fix and
+0 after; the preview note is on exactly those 91 files, and no CVL page is called unreadable. A real
+`fhand intake` with `0001-1-cropped.tif` now exits 0, and `fhand verify` says `RESULT: OK`.
+
+### CodeRabbit review 18: 1 finding, fixed
+
+| Finding | Fix | Test |
+|---|---|---|
+| Any broken block was called a preview: an unreadable real page became an info note, and the page list hid the pages after it | Only a last JPEG-preview block with no size is a preview; other broken pages give a warning and a refusal | tests 5 and 6 (RED, then GREEN) |
+
+### CodeRabbit review 19: 1 question, no change needed
+
+It asked whether the page list tells "preview" and "unreadable" apart. It does: `pages.py` checks
+`problem == "unreadable"` by name and raises `CaseError` naming the page; a preview gives the readable pages.
+Tests 3 and 6 pass. No code changed after this review.
