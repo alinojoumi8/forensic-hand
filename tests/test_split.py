@@ -90,7 +90,7 @@ def test_the_seed_sets_the_split_and_anyone_can_recompute_it(tmp_path):
 
 def test_the_test_share_sets_the_group_sizes(tmp_path):
     done = ds.split_manifest(_people(tmp_path), seed=1, test_share=0.25, dry_run=True)
-    assert (len(done["test"]["writers"]), len(done["fit"]["writers"])) == (5, 15)
+    assert (len(done["test"]["writers"]), len(done["fit"]["writers"])) == (5, 15) and done["share_note"] is None
 
 
 def test_the_fit_group_is_never_the_smaller_one_at_half(tmp_path):
@@ -107,6 +107,45 @@ def test_consent_decides_the_group_a_writer_may_join(tmp_path):
     test = ds.load_manifest(done["test"]["path"])
     assert "w03" not in _writers(test) | _writers(ds.load_manifest(done["fit"]["path"]))
     assert {r["consent_id"] for r in test.data["consent"]["records"]} >= {"c-w02", "c-f1", "c-f2"}
+
+
+def test_consent_places_count_toward_the_test_target(tmp_path):
+    # CodeRabbit review 20: the method text must say what the code does.
+    scopes = {f"w{n:02d}": ["publish"] for n in range(1, 5)}
+    done = ds.split_manifest(_people(tmp_path, scopes=scopes), seed=7, dry_run=True)
+    assert len(done["test"]["writers"]) == 10 and set(done["forced"]["test"]) <= set(done["test"]["writers"])
+    assert "target" in done["method"] and done["share_note"] is None
+
+
+def test_consent_that_breaks_the_share_is_reported(tmp_path, capsys):
+    # CodeRabbit review 20: consent can make the test group larger than the share asks; say so.
+    scopes = {"w01": ["calibrate"], "w02": ["publish"], "w03": ["publish"], "w04": ["publish"]}
+    path = _people(tmp_path, writers=4, scopes=scopes)
+    done = ds.split_manifest(path, seed=7, dry_run=True)
+    assert (len(done["fit"]["writers"]), len(done["test"]["writers"])) == (1, 3)
+    assert "3 writer(s)" in done["share_note"] and "2" in done["share_note"]
+    assert main(["dataset", "split", str(path), "--seed", "7", "--dry-run"]) == 0
+    assert done["share_note"] in capsys.readouterr().out
+
+
+def test_a_failed_write_leaves_no_half_split(tmp_path, monkeypatch):
+    # CodeRabbit review 20: a fit manifest left behind would block every retry.
+    path = _people(tmp_path)
+    real, calls = ds.save_manifest, []
+
+    def flaky(data, out):
+        calls.append(out)
+        if len(calls) == 2:
+            out.write_text("{", encoding="utf-8")                      # a half-written file
+            raise OSError("disk full")
+        real(data, out)
+
+    monkeypatch.setattr(ds, "save_manifest", flaky)
+    with pytest.raises(DatasetError, match="could not be written"):
+        ds.split_manifest(path, seed=7)
+    assert not (path.parent / "manifest-fit.json").exists() and not (path.parent / "manifest-test.json").exists()
+    monkeypatch.setattr(ds, "save_manifest", real)
+    assert ds.split_manifest(path, seed=7)["test"]["writers"]           # a retry works
 
 
 def test_a_split_before_the_forgeries_gives_the_same_groups_later(tmp_path):
