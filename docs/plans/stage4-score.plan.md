@@ -1,6 +1,7 @@
 # Plan: Stage 4, the locked score
 
-Status: draft plan, 2026-11-27. No code is written yet.
+Status: phases 1 to 4 built on 2026-11-27 (branches `feat/stage4-*`; test record in
+`docs/testing/stage4-score.tdd.md`). Phase 5, the real data pilot, is open. The score stays locked until it passes.
 Complexity: Large (4 code phases and 1 data phase).
 
 ## Summary
