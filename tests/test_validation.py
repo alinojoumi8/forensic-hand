@@ -114,5 +114,6 @@ def test_the_commands_work_end_to_end(tmp_path, capsys):
                  "--jpeg-samples", "1"]) == 0
     out = capsys.readouterr().out
     assert "dossier.html" in out and (tmp_path / "v" / "dossier.json").is_file()
+    assert "Writer score: not measured" in out     # 2 genuine signatures per writer are too few
     (data / ds.load_manifest(data / "manifest.json").items[0]["file"]).write_bytes(b"x")
     assert main(["dataset", "verify", str(data / "manifest.json")]) == 1

@@ -194,13 +194,12 @@ def separate_inks(img: Image.Image, hue_deg: float = 15.0, min_share: float = 0.
                  "removed_share": round(float(remove[ink].mean()), 4)}
 
 
-def prepare(img: Image.Image, radius_px: float, min_ink: float, blur_sigma: float = 1.5,
-            line_share: float = 0.30, separate: bool = True, hue_deg: float = 15.0) -> dict | None:
-    """Ink of a crop, ready to compare. None when there is no clear ink.
+def ink_weight(img: Image.Image, min_ink: float, line_share: float = 0.30, separate: bool = True,
+               hue_deg: float = 15.0) -> tuple[np.ndarray, dict] | None:
+    """Darkness of the pen ink (0 to 1), cut to the ink. None when there is no clear ink.
 
-    A second ink of another colour (a stamp) is removed first, then long straight lines. The size
-    is made equal by the spread of the ink (its radius of gyration), not by the edges of the ink:
-    noise moves an edge, but it barely moves the spread of all the ink.
+    A second ink of another colour (a stamp) is removed first, then long straight lines, then the
+    2% of ink farthest from the centre. The copy check and the writer score both start here.
     """
     paper = on_white(img)
     if separate:
@@ -218,7 +217,21 @@ def prepare(img: Image.Image, radius_px: float, min_ink: float, blur_sigma: floa
     rows, cols = np.nonzero(weight)
     if rows.size == 0:
         return None
-    dark = weight[rows.min():rows.max() + 1, cols.min():cols.max() + 1]
+    return weight[rows.min():rows.max() + 1, cols.min():cols.max() + 1], separation
+
+
+def prepare(img: Image.Image, radius_px: float, min_ink: float, blur_sigma: float = 1.5,
+            line_share: float = 0.30, separate: bool = True, hue_deg: float = 15.0) -> dict | None:
+    """Ink of a crop, ready to compare. None when there is no clear ink.
+
+    A second ink of another colour (a stamp) is removed first, then long straight lines. The size
+    is made equal by the spread of the ink (its radius of gyration), not by the edges of the ink:
+    noise moves an edge, but it barely moves the spread of all the ink.
+    """
+    cut = ink_weight(img, min_ink, line_share, separate, hue_deg)
+    if cut is None:
+        return None
+    dark, separation = cut
     mass = dark.sum()
     yy, xx = np.mgrid[0:dark.shape[0], 0:dark.shape[1]]
     cy, cx = (dark * yy).sum() / mass, (dark * xx).sum() / mass

@@ -12,9 +12,9 @@ import pytest
 from PIL import Image
 
 from forensic_hand import synth, writer
-from forensic_hand.cli import main
 from forensic_hand.config import DEFAULTS
-from forensic_hand.validation import dossier_html, run_validation
+from forensic_hand.datasets import load_manifest
+from forensic_hand.validation import dossier_html, run_validation, writer_score_task
 
 
 def _writer(seed: int, genuine: int = 6, forged: int = 2, pen: str = "black"):
@@ -42,7 +42,7 @@ def test_features_have_every_group_and_are_repeatable():
     for name, (kind, _) in writer.GROUPS.items():
         value = first["groups"][name]
         if kind == "histogram":
-            assert isinstance(value, list) and sum(value) == pytest.approx(1.0, abs=1e-6)
+            assert isinstance(value, list) and sum(value) == pytest.approx(1.0, abs=1e-5)   # 6-decimal rounding
             assert all(v >= 0 for v in value)
         else:
             assert isinstance(value, float) and math.isfinite(value)
@@ -132,10 +132,13 @@ def test_genuine_signatures_score_higher_than_forgeries_and_other_writers():
 
 # ---------------------------------------------------------------- validation task
 
+STRATA = ("clean", "stamp", "blur")      # fewer strata than synth.STRATA keep the copy check quick
+
+
 @pytest.fixture(scope="module")
 def writer_set(tmp_path_factory):
     folder = tmp_path_factory.mktemp("writers")
-    synth.generate_dataset(folder, writers=3, genuine=4, forgeries=1, seed=7)
+    synth.generate_dataset(folder, writers=3, genuine=4, forgeries=1, seed=7, strata=STRATA)
     return folder / "manifest.json"
 
 
@@ -148,7 +151,7 @@ def writer_dossier(writer_set):
 def test_the_validation_measures_the_writer_score_per_stratum(writer_dossier):
     task = writer_dossier["tasks"]["writer-score"]
     assert task["feature_version"] == writer.FEATURE_VERSION and task["min_known"] == 3
-    assert set(task["strata"]) == set(synth.STRATA)
+    assert set(task["strata"]) == set(STRATA)
     clean = task["strata"]["clean"]
     # 3 writers x 4 genuine; 3 x 1 forgery; 3 x 4 genuine of another writer.
     assert clean["positives"]["n"] == 12
@@ -156,23 +159,15 @@ def test_the_validation_measures_the_writer_score_per_stratum(writer_dossier):
     assert clean["negatives"]["other-writer"]["n"] == 12
     for t in ("skilled-forgery", "other-writer"):
         assert 0.0 <= clean["negatives"][t]["auc"] <= 1.0
-    assert task["all"]["positives"]["n"] == 12 * len(synth.STRATA)
+    assert task["all"]["positives"]["n"] == 12 * len(STRATA)
 
 
-def test_the_writer_score_is_skipped_with_a_reason_when_writers_have_too_few_signatures(tmp_path):
-    synth.generate_dataset(tmp_path, writers=2, genuine=3, forgeries=1, seed=5)
-    dossier = run_validation([tmp_path / "manifest.json"], purpose="benchmark", blur_samples=1, jpeg_samples=1)
-    task = dossier["tasks"]["writer-score"]
+def test_the_writer_score_is_skipped_with_a_reason_when_writers_have_too_few_signatures(writer_set):
+    manifest = load_manifest(writer_set)
+    task = writer_score_task([(manifest, manifest.items)], DEFAULTS)     # 4 genuine; 5 known + 1 are needed
     assert "6 or more genuine" in task["skipped"]
 
 
 def test_the_dossier_explains_that_the_writer_score_is_raw(writer_dossier):
     html = dossier_html(writer_dossier)
     assert "Writer score" in html and "not a likelihood ratio" in html
-
-
-def test_the_validate_command_reports_the_writer_score(tmp_path, capsys, writer_set):
-    out = tmp_path / "dossier"
-    assert main(["validate", str(writer_set), "--out", str(out), "--blur-samples", "1", "--jpeg-samples", "1"]) == 0
-    text = capsys.readouterr().out
-    assert "Writer score" in text

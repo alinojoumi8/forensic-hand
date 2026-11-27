@@ -50,6 +50,10 @@ DEFAULTS = {
     "clone_max_aspect_diff": 0.10,
     "clone_min_ink_fraction": 0.002,
 
+    # Writer score (Stage 4). A raw score until a calibration on real data passes its pass marks.
+    # Known signatures per comparison: the same number as the known-sample warning above.
+    "score_min_known": 5,
+
     # PDF
     "pdf_scan_coverage": 0.8,
     "pdf_overlay_max_coverage": 0.5,

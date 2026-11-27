@@ -78,6 +78,10 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
 - `validate` runs the copy check, the blur screen and the JPEG estimate on that data, and writes
   `dossier.html` and `dossier.json`: rates with 95% intervals, AUC, EER, the data hashes, the
   settings and a results hash. The same data and settings give the same results hash.
+- `validate` also measures the **raw writer score** (Stage 4): 12 fixed measures of the ink (shape,
+  slant, line width, line quality, loops), compared with 5 known signatures. 0 means "as close to the
+  known signatures as they are to each other". It is not a likelihood ratio, and a case cannot use it.
+  It needs 6 or more genuine signatures per writer: make the data with `--genuine 8 --forgeries 3`.
 - Every dataset has a manifest with file hashes, a licence class and optional consent records.
   Research-only data may be used for internal benchmarks only; unknown licences are refused.
 - **Synthetic results are not error rates on real casework.** The dossier says so. To collect real,
@@ -174,6 +178,8 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 | `src/forensic_hand/config.py` | The screening values. Each run records them in the log |
 | `src/forensic_hand/pages.py`, `work.py`, `clones.py`, `exhibit.py` | Pages, crops, notes, measurements, copy check, charts |
 | `src/forensic_hand/server.py`, `web/` | The local workbench server and the browser screen |
+| `src/forensic_hand/synth.py`, `datasets.py`, `validation.py`, `metrics.py` | Test data, licence and consent gates, validation |
+| `src/forensic_hand/writer.py` | The measures of a signature and the raw writer score (Stage 4) |
 
 ## License
 

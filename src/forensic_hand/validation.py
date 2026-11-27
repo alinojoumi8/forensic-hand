@@ -5,6 +5,8 @@ Tasks
   alarm on genuine signatures of the same writer, on skilled forgeries and on other writers?
 - blur-screen: how the blur screen responds to a known amount of blur.
 - jpeg-estimate: how close the JPEG quality estimate is to the true setting.
+- writer-score: how well the raw writer score (writer.py) separates genuine signatures from skilled
+  forgeries and from other writers. A raw score only: not a likelihood ratio, not used in cases.
 
 The harness calls the same functions that the workbench calls, with the same settings. The
 results are deterministic: the same data and settings give the same results hash.
@@ -18,9 +20,10 @@ import json
 from html import escape
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageFilter
 
-from . import TOOL_NAME, __version__, clones, metrics
+from . import TOOL_NAME, __version__, clones, metrics, writer
 from .checks import environment
 from .config import DEFAULTS
 from .datasets import DatasetError, load_manifest, require_use, usable_items, verify
@@ -40,8 +43,10 @@ LIMITS = [
     ("A stamp over the signature is removed only when its colour differs in hue from the pen (or one of them "
      "is black). A stamp in the pen's own colour, or a near hue such as violet over blue, still defeats the "
      "copy check. The hue rule (15 degrees) comes from synthetic inks; real scanners may need another value."),
-    "No match score for writer identity exists in this version. Nothing here measures who wrote a signature.",
+    ("The writer score is a raw research score. It is not a likelihood ratio, it does not say who wrote a "
+     "signature, and a case cannot use it. Its known signatures here are clean scans."),
 ]
+SCORE_NEGATIVES = ("skilled-forgery", "other-writer")
 
 
 def _r(value):
@@ -150,6 +155,105 @@ def copy_check_task(sets, cfg: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------- writer score
+
+def _summary(values: list) -> dict:
+    valid = [v for v in values if v is not None]
+    return {"n": len(values), "not_scored": len(values) - len(valid),
+            "median": _r(np.median(valid)) if valid else None,
+            "min": _r(min(valid)) if valid else None, "max": _r(max(valid)) if valid else None}
+
+
+def _score_rows(scores: dict) -> dict:
+    pos = [x for x in scores["positives"] if x is not None]
+    row = {"positives": _summary(scores["positives"]), "negatives": {}}
+    for t in SCORE_NEGATIVES:
+        neg = [x for x in scores[t] if x is not None]
+        row["negatives"][t] = {**_summary(scores[t]), "auc": _r(metrics.auc(pos, neg)),
+                               "eer": _r(metrics.eer(pos, neg)["eer"])}
+    return row
+
+
+def score_comparisons(sets, cfg: dict) -> dict[str, dict[str, list]]:
+    """Raw writer scores per stratum: genuine (positives), skilled forgeries and other writers.
+
+    Each writer with min_known + 1 or more clean genuine signatures takes part. Known set: min_known
+    clean genuine signatures of the writer. A genuine signature is scored against min_known of the
+    writer's other genuine signatures; forgeries and the next writer's genuine signatures are scored
+    against the first min_known. The questioned item carries the stratum's degradation; the knowns are clean.
+    Each comparison is (score, writer_id) so that later steps can resample by writer.
+    """
+    k = int(cfg["score_min_known"])
+    cache: dict[str, dict | None] = {}
+
+    def feat(manifest, item):
+        if item["sha256"] not in cache:
+            cache[item["sha256"]] = writer.features(_open(manifest, item), cfg)
+        return cache[item["sha256"]]
+
+    def score(q, knowns) -> float | None:
+        valid = [f for f in knowns if f is not None]
+        if q is None or len(valid) < k:
+            return None
+        return writer.compare(q, valid, k)["score"]
+
+    out: dict[str, dict[str, list]] = {}
+    for manifest, items in sets:
+        clean = sorted((i for i in items if i["stratum"] == "clean"), key=lambda i: i["item_id"])
+        genuine: dict[str, list[dict]] = {}
+        forged: dict[str, list[dict]] = {}
+        for item in clean:
+            if item["kind"] == "genuine":
+                genuine.setdefault(item["writer_id"], []).append(item)
+            elif item["kind"] == "forgery-skilled":
+                forged.setdefault(item["writer_id"], []).append(item)
+        questioned = {(i.get("sample") or i["item_id"], i["stratum"]): i
+                      for i in items if i["kind"] in ("genuine", "forgery-skilled")}
+        strata = sorted({i["stratum"] for i in items})
+        writers = sorted(w for w, g in genuine.items() if len(g) >= k + 1)
+        for wi, w in enumerate(writers):
+            gen = genuine[w]
+            base = [feat(manifest, g) for g in gen[:k]]
+
+            def add(kind, source, knowns, w=w):
+                for s in strata:
+                    q = questioned.get((source["item_id"], s))
+                    if q is not None:
+                        bucket = out.setdefault(s, {"positives": [], **{t: [] for t in SCORE_NEGATIVES}})
+                        bucket[kind].append((score(feat(manifest, q), knowns), w))
+
+            for g in gen:
+                add("positives", g, [feat(manifest, x) for x in gen if x is not g][:k])
+            for f in forged.get(w, []):
+                add("skilled-forgery", f, base)
+            if len(writers) > 1:
+                for g in genuine[writers[(wi + 1) % len(writers)]]:
+                    add("other-writer", g, base)
+    return out
+
+
+def writer_score_task(sets, cfg: dict) -> dict:
+    k = int(cfg["score_min_known"])
+    head = {"feature_version": writer.FEATURE_VERSION, "min_known": k,
+            "groups": {name: text for name, (_, text) in writer.GROUPS.items()}}
+    per_stratum = score_comparisons(sets, cfg)
+    if not per_stratum:
+        return {**head, "skipped": f"needs {k + 1} or more genuine signatures per writer (clean scans): "
+                                   f"{k} as known signatures and 1 as the questioned one"}
+    plain = {s: {kind: [x for x, _ in v] for kind, v in b.items()} for s, b in per_stratum.items()}
+    pooled = {kind: [x for b in plain.values() for x in b[kind]] for kind in ("positives", *SCORE_NEGATIVES)}
+    return {
+        **head,
+        "method": ("minus the mean over the measures of ln((distance to the knowns + floor) / (distance "
+                   "between the knowns + floor)); 0 = as close as the knowns are to each other"),
+        "pairs": {"positives": "a genuine signature against other genuine signatures of the same writer",
+                  "skilled-forgery": "a skilled forgery against the genuine signatures it imitates",
+                  "other-writer": "a genuine signature of another writer against the known writer"},
+        "strata": {s: _score_rows(plain[s]) for s in sorted(plain)},
+        "all": _score_rows(pooled),
+    }
+
+
 # ---------------------------------------------------------------- quality screens
 
 def _originals(sets, limit: int):
@@ -244,7 +348,8 @@ def run_validation(manifest_paths, purpose: str = "benchmark", config: dict | No
         "environment": environment(cfg),
         "datasets": described,
         "tasks": {"copy-check": copy_check_task(sets, cfg), "blur-screen": blur_task(sets, cfg, blur_samples),
-                  "jpeg-estimate": jpeg_task(sets, cfg, jpeg_samples)},
+                  "jpeg-estimate": jpeg_task(sets, cfg, jpeg_samples),
+                  "writer-score": writer_score_task(sets, cfg)},
         "limits": LIMITS,
         "generated_claimed": utc_now(),
     }
@@ -275,6 +380,28 @@ def _pct(r: dict) -> str:
         return "-"
     lo, hi = r["ci95"]
     return f"{r['rate'] * 100:.1f}% ({r['k']}/{r['n']}; 95% CI {lo * 100:.1f} to {hi * 100:.1f})"
+
+
+def _writer_html(task: dict) -> str:
+    parts = ["<h2>Writer score (raw)</h2><p class='muted'>A raw research score: it is <strong>not a likelihood "
+             "ratio</strong> and a case cannot use it. 0 means: as close to the known signatures as they are to "
+             f"each other; below 0: farther away. Feature version {_e(task['feature_version'])}, "
+             f"{_e(task['min_known'])} known signatures per comparison.</p>"]
+    if task.get("skipped"):
+        parts.append(f"<p>Not measured: {_e(task['skipped'])}.</p>")
+        return "".join(parts)
+    parts.append("<ul>" + "".join(f"<li><strong>{_e(k)}</strong>: {_e(v)}</li>" for k, v in task["pairs"].items())
+                 + "</ul><div class='scroll'><table><tr><th>Stratum</th><th>Genuine (n, median)</th>"
+                   "<th>Skilled forgery (n, median)</th><th>AUC</th><th>EER</th>"
+                   "<th>Other writer (n, median)</th><th>AUC</th><th>EER</th></tr>")
+    for name, row in [*task["strata"].items(), ("all strata", task["all"])]:
+        pos, neg = row["positives"], row["negatives"]
+        cells = "".join(f"<td class='n'>{_e(neg[t]['n'])}, {_e(neg[t]['median'])}</td><td class='n'>"
+                        f"{_e(neg[t]['auc'])}</td><td class='n'>{_e(neg[t]['eer'])}</td>" for t in SCORE_NEGATIVES)
+        parts.append(f"<tr><td>{_e(name)}</td><td class='n'>{_e(pos['n'])}, {_e(pos['median'])}</td>{cells}</tr>")
+    parts.append("</table></div><h3>The measures</h3><ul>"
+                 + "".join(f"<li><strong>{_e(k)}</strong>: {_e(v)}</li>" for k, v in task["groups"].items()) + "</ul>")
+    return "".join(parts)
 
 
 def dossier_html(d: dict) -> str:
@@ -324,6 +451,9 @@ def dossier_html(d: dict) -> str:
         add(f"<tr><td>{_e(name)}</td><td class='n'>{_e(_pct(row['positives']['notice']))}</td>"
             f"<td class='n'>{_e(_pct(sw['notice']))}</td><td class='n'>{_e(sw['max_score'])}</td></tr>")
     add("</table></div>")
+
+    if "writer-score" in d["tasks"]:     # dossiers made before Stage 4 have no writer score
+        add(_writer_html(d["tasks"]["writer-score"]))
 
     blur = d["tasks"]["blur-screen"]
     add(f"<h2>Blur screen</h2><p class='muted'>{_e(blur['method'])}; {_e(blur['samples'])} signature(s).</p>"

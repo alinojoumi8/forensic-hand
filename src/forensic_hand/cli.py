@@ -181,6 +181,13 @@ def cmd_validate(args) -> int:
     same = copy["negatives"]["same-writer"]["warning"]
     _say(f"Copy check, all strata: copies flagged {copy['positives']['warning']['rate']}, "
          f"same-writer false alarms {same['rate']} ({same['k']}/{same['n']})")
+    score = dossier["tasks"]["writer-score"]
+    if score.get("skipped"):
+        _say(f"Writer score: not measured: {score['skipped']}")
+    else:
+        neg = score["all"]["negatives"]
+        _say(f"Writer score (raw, all strata): AUC against skilled forgeries {neg['skilled-forgery']['auc']}, "
+             f"against other writers {neg['other-writer']['auc']}")
     _say(f"Results hash: {dossier['results_sha256']}")
     _say(f"Dossier: {path}")
     flags = [d["synthetic"] for d in dossier["datasets"]]
