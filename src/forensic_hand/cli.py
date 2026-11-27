@@ -7,8 +7,10 @@ import sys
 from pathlib import Path
 
 from . import __version__, tsa, verify_case
+from .calibrate import PROPOSITIONS, CalibrationError
 from .case import Case, CaseError
 from .checks import run_checks
+from .config import DEFAULTS
 from .datasets import USES, DatasetError
 from .export import ExportError, export_case
 from .findings import count_levels
@@ -132,7 +134,7 @@ def cmd_synth(args) -> int:
     from .synth import STRATA, generate_dataset
 
     manifest = generate_dataset(args.out, writers=args.writers, genuine=args.genuine, forgeries=args.forgeries,
-                                seed=args.seed, dpi=args.dpi, strata=STRATA)
+                                seed=args.seed, dpi=args.dpi, strata=STRATA, writer_prefix=args.writer_prefix)
     _say(f"Synthetic dataset: {args.out}")
     _say(f"Items: {len(manifest['items'])} from {args.writers} writer(s), seed {args.seed}")
     _say("These are generated signatures. They show how a method behaves, not real error rates.")
@@ -169,13 +171,38 @@ def cmd_dataset_build(args) -> int:
     return 0
 
 
+def cmd_calibrate(args) -> int:
+    from .calibrate import calibrate, save_calibration
+
+    if Path(args.out).exists():
+        raise CalibrationError(f"the file exists already; choose a new name: {args.out}")
+    if args.min_known < 2:
+        raise CalibrationError("--min-known must be 2 or more")
+    body = calibrate(args.manifests, args.propositions, config={**DEFAULTS, "score_min_known": args.min_known},
+                     strata=args.strata)
+    save_calibration(body, args.out)
+    model, pairs = body["model"], body["data"]["pairs"]
+    _say(f"Calibration: {args.out}")
+    _say(f"Propositions: {args.propositions}. Pairs: {pairs['same']} same writer, {pairs['different']} for Hd, "
+         f"{len(body['data']['writers'])} writer(s). Strata: {', '.join(body['conditions']['strata'])}")
+    _say(f"Model: log10 LR = {model['a']} x score + {model['b']}, kept between {model['lower']} and {model['upper']}")
+    if body["status"] == "demo":
+        _say("Status: demo (synthetic data). A case can never use it.")
+    else:
+        _say("Status: candidate. A case cannot use it until a release checks it against time stamped pass marks.")
+    _say(f"Calibration hash: {body['results_sha256']}")
+    return 0
+
+
 def cmd_validate(args) -> int:
+    from .calibrate import load_calibration
     from .validation import run_validation, write_dossier
 
     if (Path(args.out) / "dossier.json").exists():
         raise DatasetError(f"a dossier exists already in {args.out}; choose a new folder")
+    calibration = load_calibration(args.calibration) if args.calibration else None
     dossier = run_validation(args.manifests, purpose=args.purpose, blur_samples=args.blur_samples,
-                             jpeg_samples=args.jpeg_samples)
+                             jpeg_samples=args.jpeg_samples, calibration=calibration)
     path = write_dossier(dossier, args.out)
     copy = dossier["tasks"]["copy-check"]["all"]
     same = copy["negatives"]["same-writer"]["warning"]
@@ -188,6 +215,15 @@ def cmd_validate(args) -> int:
         neg = score["all"]["negatives"]
         _say(f"Writer score (raw, all strata): AUC against skilled forgeries {neg['skilled-forgery']['auc']}, "
              f"against other writers {neg['other-writer']['auc']}")
+    lr = dossier["tasks"].get("lr")
+    if lr and lr.get("skipped"):
+        _say(f"LR: not measured: {lr['skipped']}")
+    elif lr:
+        mis = lr["misleading"]
+        _say(f"LR ({lr['status']} calibration): Cllr {lr['cllr']} (95% by writers {lr['cllr_ci95'][0]} to "
+             f"{lr['cllr_ci95'][1]}); misleading for Hp {mis['hp']['rate']}, for Hd {mis['hd']['rate']}")
+        if lr["writers_overlap"]:
+            _say(f"Warning: {len(lr['writers_overlap'])} writer(s) were also used to calibrate: not a fair test.")
     _say(f"Results hash: {dossier['results_sha256']}")
     _say(f"Dossier: {path}")
     flags = [d["synthetic"] for d in dossier["datasets"]]
@@ -323,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--forgeries", type=int, default=2, help="skilled forgeries per writer")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--dpi", type=int, default=300)
+    p.add_argument("--writer-prefix", default="w", help="start of each writer id (default: %(default)s)")
     p.set_defaults(func=cmd_synth)
 
     p = sub.add_parser("dataset", help="check or build a dataset manifest")
@@ -348,7 +385,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--purpose", default="benchmark", choices=list(USES))
     p.add_argument("--blur-samples", type=int, default=12)
     p.add_argument("--jpeg-samples", type=int, default=12)
+    p.add_argument("--calibration", help="also measure the LRs of this calibration file on the data")
     p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("calibrate", help="fit the writer score to a likelihood ratio (Stage 4)")
+    p.add_argument("manifests", nargs="+", metavar="MANIFEST")
+    p.add_argument("--propositions", required=True, choices=list(PROPOSITIONS),
+                   help="what Hd is: a skilled forger, or a random other writer")
+    p.add_argument("--out", required=True, help="new calibration file (JSON)")
+    p.add_argument("--strata", nargs="+", help="only these conditions (default: all in the data)")
+    p.add_argument("--min-known", type=int, default=DEFAULTS["score_min_known"],
+                   help="known signatures per comparison (default: %(default)s)")
+    p.set_defaults(func=cmd_calibrate)
     return parser
 
 
@@ -363,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return args.func(args)
-    except (CaseError, ExportError, LedgerError, DatasetError) as exc:
+    except (CaseError, ExportError, LedgerError, DatasetError, CalibrationError) as exc:
         _error(str(exc))
         return 2
     except SealError as exc:

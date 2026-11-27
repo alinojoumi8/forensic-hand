@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 from html import escape
 from pathlib import Path
 
@@ -254,6 +255,65 @@ def writer_score_task(sets, cfg: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------- likelihood ratio
+
+def lr_task(sets, cfg: dict, calibration: dict) -> dict:
+    """Apply a calibration to new data and measure how good its LRs are."""
+    from . import calibrate as cal
+
+    cal.check(calibration)
+    cal.check_settings(calibration, cfg)
+    prop = calibration["propositions"]["id"]
+    k = int(calibration["conditions"]["known_count"])
+    scores = cal.labelled_scores(sets, {**cfg, "score_min_known": k}, prop, calibration["conditions"]["strata"])
+    head = {"calibration_sha256": calibration["results_sha256"], "status": calibration["status"],
+            "propositions": prop, "hp": calibration["propositions"]["hp"], "hd": calibration["propositions"]["hd"],
+            "model": calibration["model"], "strata": scores["strata"], "outside_conditions": scores["outside"]}
+    if not scores["same"] or not scores["diff"]:
+        return {**head, "skipped": "no comparisons of both kinds inside the conditions of the calibration"}
+    rows = ([(w, 1, cal.apply(calibration, x, cfg)["log10_lr"], x) for x, w in scores["same"]]
+            + [(w, 0, cal.apply(calibration, x, cfg)["log10_lr"], x) for x, w in scores["diff"]])
+    same = [v for _, y, v, _ in rows if y == 1]
+    diff = [v for _, y, v, _ in rows if y == 0]
+
+    def both(rs):
+        s = [v for _, y, v, _ in rs if y == 1]
+        d = [v for _, y, v, _ in rs if y == 0]
+        return (s, d) if s and d else None
+
+    def boot_cllr(rs):
+        pair = both(rs)
+        return None if pair is None else metrics.cllr(*pair)
+
+    def boot_rate(side):
+        def stat(rs):
+            pair = both(rs)
+            return None if pair is None else metrics.misleading(*pair)[side]["rate"]
+        return stat
+
+    mis = metrics.misleading(same, diff)
+    misleading = {}
+    for side in ("hp", "hd"):
+        m = mis[side]
+        misleading[side] = {"k": m["k"], "n": m["n"], "rate": _r(m["rate"]), "ci95": [_r(v) for v in m["ci95"]],
+                            "ci95_writers": [_r(v) for v in metrics.bootstrap(rows, boot_rate(side))]}
+    value = metrics.cllr(same, diff)
+    minimum = metrics.cllr_min([x for _, y, _, x in rows if y == 1], [x for _, y, _, x in rows if y == 0])
+    writers = sorted({w for w, *_ in rows})
+    return {
+        **head,
+        "pairs": {"same": len(same), "different": len(diff)},
+        "writers": len(writers),
+        "writers_overlap": sorted(set(writers) & set(calibration["data"]["writers"])),
+        "cllr": _r(value), "cllr_min": _r(minimum), "cllr_cal": _r(value - minimum),
+        "cllr_ci95": [_r(v) for v in metrics.bootstrap(rows, boot_cllr)],
+        "misleading": misleading,
+        "bounded_share": _r(sum(1 for _, _, v, _ in rows if v in (calibration["model"]["lower"],
+                                                                    calibration["model"]["upper"])) / len(rows)),
+        "tippett": {"same": sorted(round(v, 4) for v in same), "different": sorted(round(v, 4) for v in diff)},
+    }
+
+
 # ---------------------------------------------------------------- quality screens
 
 def _originals(sets, limit: int):
@@ -323,7 +383,7 @@ def _results_hash(dossier: dict) -> str:
 
 
 def run_validation(manifest_paths, purpose: str = "benchmark", config: dict | None = None,
-                   blur_samples: int = 12, jpeg_samples: int = 12) -> dict:
+                   blur_samples: int = 12, jpeg_samples: int = 12, calibration: dict | None = None) -> dict:
     cfg = dict(config or DEFAULTS)
     sets, described = [], []
     for path in manifest_paths:
@@ -353,6 +413,8 @@ def run_validation(manifest_paths, purpose: str = "benchmark", config: dict | No
         "limits": LIMITS,
         "generated_claimed": utc_now(),
     }
+    if calibration is not None:
+        dossier["tasks"]["lr"] = lr_task(sets, cfg, calibration)
     dossier["results_sha256"] = _results_hash(dossier)
     return dossier
 
@@ -401,6 +463,94 @@ def _writer_html(task: dict) -> str:
         parts.append(f"<tr><td>{_e(name)}</td><td class='n'>{_e(pos['n'])}, {_e(pos['median'])}</td>{cells}</tr>")
     parts.append("</table></div><h3>The measures</h3><ul>"
                  + "".join(f"<li><strong>{_e(k)}</strong>: {_e(v)}</li>" for k, v in task["groups"].items()) + "</ul>")
+    return "".join(parts)
+
+
+def tippett_svg(same: list, different: list, width: int = 640, height: int = 300) -> str:
+    """Tippett plot: the share of LRs at or above each value, for each kind of pair. Plain SVG, no script."""
+    lo = min(-1.0, *same, *different)
+    hi = max(1.0, *same, *different)
+    left, right, top, bottom = 52, 16, 14, 40
+    w, h = width - left - right, height - top - bottom
+
+    def x(v):
+        return left + (v - lo) / (hi - lo) * w
+
+    def y(share):
+        return top + (1 - share) * h
+
+    def line(values, colour, dash):
+        values = sorted(values)
+        n = len(values)
+        points = [(x(lo), y(1.0))]
+        for i, v in enumerate(values):
+            above = (n - i) / n
+            points += [(x(v), y(above)), (x(v), y((n - i - 1) / n))]
+        points.append((x(hi), y(0.0)))
+        path = " ".join(f"{px:.1f},{py:.1f}" for px, py in points)
+        return (f"<polyline fill='none' stroke='{colour}' stroke-width='2' stroke-dasharray='{dash}' "
+                f"points='{path}'/>")
+
+    ticks = "".join(f"<line x1='{x(t):.1f}' y1='{top}' x2='{x(t):.1f}' y2='{top + h}' stroke='#8884'/>"
+                    f"<text x='{x(t):.1f}' y='{top + h + 16}' text-anchor='middle' font-size='11'>{t:g}</text>"
+                    for t in range(math.ceil(lo), math.floor(hi) + 1))
+    shares = "".join(f"<text x='{left - 6}' y='{y(s) + 4:.1f}' text-anchor='end' font-size='11'>{s:.0%}</text>"
+                     for s in (0, 0.5, 1))
+    return (f"<svg role='img' aria-label='Tippett plot' viewBox='0 0 {width} {height}' width='100%' "
+            f"style='max-width:{width}px' font-family='system-ui,sans-serif' fill='currentColor'>"
+            f"<rect x='{left}' y='{top}' width='{w}' height='{h}' fill='none' stroke='#8888'/>{ticks}{shares}"
+            f"{line(same, '#1f7a4d', '0')}{line(different, '#b3541e', '6 4')}"
+            f"<text x='{left + w / 2:.0f}' y='{height - 4}' text-anchor='middle' font-size='12'>log10 LR "
+            "(0 is LR 1; 2 is LR 100; -2 is LR 1/100)</text></svg>")
+
+
+def _lr_html(task: dict) -> str:
+    parts = ["<h2>Likelihood ratio</h2>"]
+    if task["status"] == "demo":
+        parts.append("<div class='banner'><strong>This is a demo calibration.</strong> It was fitted on synthetic "
+                     "data. These numbers show how the method behaves. A case can never use a demo calibration.</div>")
+    elif task["status"] != "released":
+        parts.append("<div class='banner'><strong>This calibration is not released.</strong> A case cannot use it "
+                     "until a release checks it against pass marks that were time stamped before the test.</div>")
+    parts.append(f"<p><strong>Hp</strong>: {_e(task['hp'])}<br><strong>Hd</strong>: {_e(task['hd'])}</p>"
+                 f"<p class='muted'>Calibration SHA-256 <span class='mono'>{_e(task['calibration_sha256'])}</span>. "
+                 f"Strata: {_e(', '.join(task['strata']) or 'none')}"
+                 + (f"; outside the calibration, not measured: {_e(', '.join(task['outside_conditions']))}"
+                    if task["outside_conditions"] else "") + ".</p>")
+    if task.get("skipped"):
+        parts.append(f"<p>Not measured: {_e(task['skipped'])}.</p>")
+        return "".join(parts)
+    if task["writers_overlap"]:
+        parts.append("<div class='banner'><strong>Writers were used to calibrate and are tested again:</strong> "
+                     f"{_e(', '.join(task['writers_overlap']))}. This is not a fair test. A release refuses it.</div>")
+    mis = task["misleading"]
+
+    def rate(m):
+        lo, hi = m["ci95_writers"]
+        by_writers = f"; by writers {lo * 100:.1f} to {hi * 100:.1f}" if lo is not None else ""
+        return f"{_pct(m)}{by_writers}"
+
+    lo, hi = task["cllr_ci95"]
+    parts.append(
+        "<div class='scroll'><table><tr><th>Measure</th><th>Value</th><th>Meaning</th></tr>"
+        f"<tr><td>Pairs</td><td class='n'>{_e(task['pairs']['same'])} same writer, "
+        f"{_e(task['pairs']['different'])} for Hd, {_e(task['writers'])} writer(s)</td><td></td></tr>"
+        f"<tr><td>Cllr</td><td class='n'>{_e(task['cllr'])} (95% by writers {_e(lo)} to {_e(hi)})</td>"
+        "<td>Cost of the LRs. 0 is perfect; 1 is no better than always saying LR 1.</td></tr>"
+        f"<tr><td>Cllr-min</td><td class='n'>{_e(task['cllr_min'])}</td><td>The best cost these scores allow "
+        "(discrimination).</td></tr>"
+        f"<tr><td>Cllr-cal</td><td class='n'>{_e(task['cllr_cal'])}</td><td>Cost of the calibration "
+        "(Cllr minus Cllr-min).</td></tr>"
+        f"<tr><td>Misleading for Hp</td><td class='n'>{_e(rate(mis['hp']))}</td><td>Same-writer pairs with an LR "
+        "below 1.</td></tr>"
+        f"<tr><td>Misleading for Hd</td><td class='n'>{_e(rate(mis['hd']))}</td><td>Pairs for Hd with an LR above 1."
+        "</td></tr>"
+        f"<tr><td>At a bound</td><td class='n'>{_e(round(task['bounded_share'] * 100, 1))}%</td><td>LRs held at the "
+        f"lower ({_e(task['model']['lower'])}) or upper ({_e(task['model']['upper'])}) log10 bound.</td></tr>"
+        "</table></div>")
+    parts.append("<h3>Tippett plot</h3><p class='muted'>Share of LRs at or above each value. Solid green: same-writer "
+                 "pairs (should lie to the right). Dashed orange: pairs for Hd (should lie to the left).</p>"
+                 + tippett_svg(task["tippett"]["same"], task["tippett"]["different"]))
     return "".join(parts)
 
 
@@ -454,6 +604,8 @@ def dossier_html(d: dict) -> str:
 
     if "writer-score" in d["tasks"]:     # dossiers made before Stage 4 have no writer score
         add(_writer_html(d["tasks"]["writer-score"]))
+    if "lr" in d["tasks"]:
+        add(_lr_html(d["tasks"]["lr"]))
 
     blur = d["tasks"]["blur-screen"]
     add(f"<h2>Blur screen</h2><p class='muted'>{_e(blur['method'])}; {_e(blur['samples'])} signature(s).</p>"
