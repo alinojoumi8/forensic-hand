@@ -183,8 +183,11 @@ def cmd_validate(args) -> int:
          f"same-writer false alarms {same['rate']} ({same['k']}/{same['n']})")
     _say(f"Results hash: {dossier['results_sha256']}")
     _say(f"Dossier: {path}")
-    if any(d["synthetic"] for d in dossier["datasets"]):
+    flags = [d["synthetic"] for d in dossier["datasets"]]
+    if all(flags):
         _say("Synthetic data only: not error rates on real casework.")
+    elif any(flags):
+        _say("Real and synthetic data are mixed: the pooled numbers are not real error rates.")
     return 0
 
 
@@ -322,7 +325,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_dataset_verify)
     q = dsub.add_parser("build", help="make a manifest for a real collection from a CSV file")
     q.add_argument("folder", help="the folder that holds the scans")
-    q.add_argument("--csv", required=True, help="items CSV: file, writer_id, kind, stratum, consent_id, capture")
+    q.add_argument("--csv", required=True,
+                   help="items CSV: file, writer_id, kind, stratum, consent_id, capture, source_item, sample")
     q.add_argument("--title", required=True)
     q.add_argument("--license-class", required=True, choices=["own", "commercial", "research-only", "unknown"])
     q.add_argument("--license-name", required=True)

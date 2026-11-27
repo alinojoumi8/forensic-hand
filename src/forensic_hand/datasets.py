@@ -96,9 +96,14 @@ def check_manifest(data) -> None:
     consent = data.get("consent")
     if not isinstance(consent, dict) or not isinstance(consent.get("records"), list):
         raise DatasetError("the manifest needs a consent section (it can be empty)")
+    consent_ids: set = set()
     for rec in consent["records"]:
         if not isinstance(rec, dict) or not isinstance(rec.get("consent_id"), str):
             raise DatasetError("each consent record needs a consent_id")
+        if rec["consent_id"] in consent_ids:
+            # Two records with one id: the order of the list must never bring back a withdrawn consent.
+            raise DatasetError(f"the consent id {rec['consent_id']} is used twice")
+        consent_ids.add(rec["consent_id"])
         if not isinstance(rec.get("scopes"), list) or any(s not in USES for s in rec["scopes"]):
             raise DatasetError(f"consent {rec.get('consent_id')}: scopes must come from {', '.join(USES)}")
     items = data.get("items")
@@ -215,7 +220,9 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
                    license_url=None, notes=None) -> dict:
     """Make a manifest for a real collection from a spreadsheet saved as CSV.
 
-    items.csv columns: file, writer_id, kind, and optional stratum, consent_id, capture, source_item, item_id.
+    items.csv columns: file, writer_id, kind, and optional stratum, consent_id, capture, source_item, item_id,
+    sample. Set `sample` on a degraded item (for example a blurred scan) to the item_id of its clean original,
+    so that the validation can pair it; a clean original needs no sample.
     consent.csv columns: consent_id, scopes (separated by ;), date, withdrawn (yes or no).
     Use pseudonymous writer ids. Keep the list of real names somewhere else.
     """
@@ -244,7 +251,7 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
             "capture": (row.get("capture") or "").strip() or None,
             "dpi": _image_dpi(folder / name),
         }
-        for key in ("consent_id", "source_item"):
+        for key in ("consent_id", "source_item", "sample"):
             if (row.get(key) or "").strip():
                 item[key] = row[key].strip()
         items.append(item)

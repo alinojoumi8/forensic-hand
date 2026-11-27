@@ -229,3 +229,13 @@ What the run taught:
 
 The synthesizer was also checked by eye: forgeries are slower (mean speed lower in every case) and
 less smooth (log dimensionless jerk higher on average for 12 of 12 writers), with blunt ends.
+
+## CodeRabbit review 7 (Stage 3, 2026-11-27)
+
+Command: `coderabbit review --committed --base-commit 328f2ca --agent`. 4 findings, all real, all fixed,
+each with a test in `tests/test_datasets.py`:
+
+1. A consent id used twice could bring back a withdrawn consent: duplicate ids are refused.
+2. Degraded real scans imported from CSV could not be paired with their originals: new `sample` column.
+3. `synth` could overwrite images in a folder that was not empty: it now needs an empty folder.
+4. A report mixing real and synthetic data said "synthetic data only": it now says the data is mixed.

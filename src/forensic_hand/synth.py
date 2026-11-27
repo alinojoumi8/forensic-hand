@@ -325,8 +325,8 @@ def generate_dataset(out, writers: int = 12, genuine: int = 4, forgeries: int = 
     from . import datasets
 
     out = Path(out)
-    if (out / "manifest.json").exists():
-        raise datasets.DatasetError(f"a dataset exists already in {out}")
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise datasets.DatasetError(f"the folder is not empty; choose a new folder: {out}")
     (out / "images").mkdir(parents=True, exist_ok=True)
     items: list[dict] = []
 

@@ -64,7 +64,9 @@ Use more than one pen type (ballpoint, gel, felt-tip). Record the pen in a note 
 .\.venv\Scripts\fhand.exe dataset build D:\data\pilot --csv D:\data\pilot\items.csv --consent D:\data\pilot\consent.csv --title "Pilot collection 2027" --license-class own --license-name "Own collection under consent"
 ```
 
-`items.csv` columns: `file, writer_id, kind, stratum, consent_id, capture, source_item, item_id`.
+`items.csv` columns: `file, writer_id, kind, stratum, consent_id, capture, source_item, item_id, sample`.
+For a degraded version of an item (for example the same sheet scanned at 150 DPI, `stratum` `dpi150`),
+set `sample` to the `item_id` of the clean original. The validation uses this link to pair items.
 `consent.csv` columns: `consent_id, scopes, date, withdrawn` (scopes separated by `;`).
 
 Then check it and run the validation:

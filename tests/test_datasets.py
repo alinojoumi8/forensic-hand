@@ -143,3 +143,66 @@ def test_build_from_csv_refuses_a_missing_file(tmp_path):
     items_csv.write_text("file,writer_id,kind\nnope.png,p01,genuine\n", encoding="utf-8")
     with pytest.raises(DatasetError):
         ds.build_from_csv(folder, items_csv, title="T", license_class="own", license_name="x", out=folder / "m.json")
+
+
+# ================================================ CodeRabbit review 7 (Stage 3)
+
+def test_r7_a_consent_id_used_twice_is_refused(tmp_path):
+    consent = [{"consent_id": "c1", "scopes": ["benchmark"], "withdrawn": True},
+               {"consent_id": "c1", "scopes": ["benchmark"], "withdrawn": False}]
+    with pytest.raises(DatasetError):
+        _manifest(tmp_path, consent=consent)
+
+
+def test_r7_csv_sample_links_let_degraded_real_scans_pair_with_their_originals(tmp_path):
+    from forensic_hand.validation import _copy_pairs
+
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    for name, seed in (("a1.png", 1), ("a2.png", 2), ("a2-150.png", 2), ("b1.png", 3), ("b1-150.png", 3)):
+        save_image(folder / name, signature_image(seed), dpi=(300, 300))
+    items_csv = tmp_path / "items.csv"
+    items_csv.write_text(
+        "item_id,file,writer_id,kind,stratum,sample\n"
+        "a1,a1.png,p1,genuine,clean,\na2,a2.png,p1,genuine,clean,\na2-150,a2-150.png,p1,genuine,dpi150,a2\n"
+        "b1,b1.png,p2,genuine,clean,\nb1-150,b1-150.png,p2,genuine,dpi150,b1\n", encoding="utf-8")
+    manifest = ds.build_from_csv(folder, items_csv, title="T", license_class="own", license_name="x",
+                                 out=folder / "m.json")
+    pairs = _copy_pairs(manifest["items"])
+    assert ("a1", "a2-150") in pairs["dpi150"]["same-writer"]
+    assert pairs["dpi150"]["other-writer"]
+
+
+def test_r7_synth_refuses_a_folder_that_is_not_empty(tmp_path):
+    from forensic_hand import synth
+
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "w001-g1.png").write_bytes(b"keep me")
+    with pytest.raises(DatasetError):
+        synth.generate_dataset(tmp_path, writers=1, genuine=2, forgeries=0, seed=1)
+    assert (tmp_path / "images" / "w001-g1.png").read_bytes() == b"keep me"
+
+
+def test_r7_a_mixed_report_does_not_say_synthetic_only():
+    from forensic_hand.validation import dossier_html
+
+    base = {"tool": {"name": "t", "version": "0"}, "purpose": "benchmark", "generated_claimed": "x",
+            "results_sha256": "0" * 64, "limits": [],
+            "environment": {"python": "3", "platform": "p", "packages": {}, "config_sha256": "0"},
+            "tasks": {"copy-check": {"settings": {"clone_warning_at": 0.95, "clone_notice_at": 0.9}, "pairs": {},
+                                     "strata": {}, "all": _EMPTY_ROW},
+                      "blur-screen": {"method": "m", "samples": 0, "rows": []},
+                      "jpeg-estimate": {"samples": 0, "rows": []}}}
+    real = {"title": "Real", "synthetic": False, "license": {"class": "own", "name": "x"}, "items_used": 1,
+            "items_total": 1, "items_excluded": {}, "writers": 1, "manifest_sha256": "0"}
+    mixed = dossier_html({**base, "datasets": [real, {**real, "title": "Synth", "synthetic": True}]})
+    only_real = dossier_html({**base, "datasets": [real]})
+    assert "Synthetic data only" not in mixed and "mixes real and synthetic" in mixed
+    assert "Synthetic data only" not in only_real and "mixes" not in only_real
+
+
+_RATE = {"k": 0, "n": 0, "rate": None, "ci95": [None, None]}
+_EMPTY_ROW = {"positives": {"n": 0, "warning": _RATE, "notice": _RATE, "not_compared": 0},
+              "negatives": {t: {"n": 0, "warning": _RATE, "notice": _RATE, "max_score": None}
+                            for t in ("same-writer", "skilled-forgery", "other-writer")},
+              "auc": None, "eer": {"eer": None, "threshold": None}}

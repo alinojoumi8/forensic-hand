@@ -280,9 +280,13 @@ def dossier_html(d: dict) -> str:
     add = parts.append
     add(f"<h1>Validation dossier</h1><p class='muted'>{_e(d['tool']['name'])} {_e(d['tool']['version'])} &middot; "
         f"purpose: {_e(d['purpose'])} &middot; made {_e(d['generated_claimed'])} (clock of this computer)</p>")
-    if any(ds["synthetic"] for ds in d["datasets"]):
+    flags = [ds["synthetic"] for ds in d["datasets"]]
+    if flags and all(flags):
         add("<div class='banner'><strong>Synthetic data only.</strong> These numbers show how the method behaves on "
             "generated signatures. They are not error rates on real casework, and they must not be quoted as such.</div>")
+    elif any(flags):
+        add("<div class='banner'><strong>This report mixes real and synthetic data.</strong> The pooled numbers are "
+            "not error rates on real casework. Run the real datasets alone to report real error rates.</div>")
     add(f"<p>Results hash (SHA-256): <span class='mono'>{_e(d['results_sha256'])}</span>. The same data and "
         "settings give the same hash.</p>")
 
