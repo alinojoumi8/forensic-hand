@@ -416,9 +416,10 @@ def build_from_names(folder, title, license_class, license_name, preset=None, pa
 # ---------------------------------------------------------------- a fit group and a test group (Stage 4, Phase 5)
 
 SPLIT_GROUPS = {"fit": "calibrate", "test": "publish"}
-SPLIT_METHOD = ("writers in the order of the SHA-256 of '<seed>:<writer id>' (hex text); the first floor(test share x "
-                "writers) of the writers free to join either group go to the test group, after the writers that "
-                "consent places in one group only")
+SPLIT_METHOD = ("test target = floor(test share x the writers who may join a group). A writer whose consent allows one "
+                "group only goes there; those in the test group count toward the target. The rest of the target "
+                "comes from the writers free to join either group, in the order of the SHA-256 of "
+                "'<seed>:<writer id>' (hex text), as many as there are; the other free writers join the fit group.")
 
 
 def _split_key(seed: int, writer: str) -> str:
@@ -464,12 +465,17 @@ def split_manifest(path, seed: int, test_share: float = 0.5, fit_out=None, test_
               "test": [w for w in writers if w in can_test and w not in can_fit]}
     left_out = [w for w in writers if w not in can_fit and w not in can_test]
     free = sorted((w for w in writers if w in can_fit and w in can_test), key=lambda w: _split_key(seed, w))
-    # Round down, so that at a share of one half the fit group is never the smaller one.
-    take = min(max(math.floor(test_share * (len(writers) - len(left_out))) - len(forced["test"]), 0), len(free))
+    # Round down, so that at a share of one half the fit group is not the smaller one (unless consent decides).
+    target = math.floor(test_share * (len(writers) - len(left_out)))
+    take = min(max(target - len(forced["test"]), 0), len(free))
     groups = {"fit": sorted(forced["fit"] + free[take:]), "test": sorted(forced["test"] + free[:take])}
     if not groups["fit"] or not groups["test"]:
         raise DatasetError(f"the split needs writers in both groups: {len(groups['fit'])} for fit, "
                            f"{len(groups['test'])} for test ({len(left_out)} left out)")
+    share_note = None
+    if len(groups["test"]) != target:
+        share_note = (f"Consent placed the writers so that the test group has {len(groups['test'])} writer(s), "
+                      f"not the {target} that the share asks for (fit group: {len(groups['fit'])}).")
 
     group_of = {w: g for g, ws in groups.items() for w in ws}
     kept = {g: [i for i in source.items if group_of.get(i["writer_id"]) == g] for g in groups}
@@ -478,12 +484,13 @@ def split_manifest(path, seed: int, test_share: float = 0.5, fit_out=None, test_
     lic = source.data["license"]["class"]
     summary = {"source": str(source.path), "source_manifest_sha256": source.manifest_sha256, "seed": seed,
                "test_share": test_share, "method": SPLIT_METHOD, "forced": forced, "left_out": left_out,
-               "people_in_both_groups": both, "license_class": lic,
+               "share_note": share_note, "people_in_both_groups": both, "license_class": lic,
                "license_allows": {p: p in LICENSE_USES[lic] for p in SPLIT_GROUPS.values()}}
     for g in groups:
         summary[g] = {"path": str(outs[g]), "purpose": SPLIT_GROUPS[g], "writers": groups[g], "items": len(kept[g])}
     if dry_run:
         return summary
+    datas = {}
     for g, other in (("fit", "test"), ("test", "fit")):
         named = {i.get(k) for i in kept[g] for k in ("consent_id", "forger_consent_id")} - {None}
         data = {**source.data, "items": kept[g],
@@ -493,7 +500,19 @@ def split_manifest(path, seed: int, test_share: float = 0.5, fit_out=None, test_
                 "split": {"group": g, "purpose": SPLIT_GROUPS[g], "seed": seed, "test_share": test_share,
                           "method": SPLIT_METHOD, "source_manifest_sha256": source.manifest_sha256,
                           "writers": groups[g], "other_group_writers": len(groups[other]),
-                          "left_out": left_out, "people_in_both_groups": both}}
+                          "left_out": left_out, "share_note": share_note, "people_in_both_groups": both}}
         check_manifest(data)
-        save_manifest(data, outs[g])
+        datas[g] = data
+    written: list[Path] = []
+    try:
+        for g in ("fit", "test"):
+            outs[g].touch(exist_ok=False)          # claims the name; refuses a file that appeared meanwhile
+            written.append(outs[g])
+            save_manifest(datas[g], outs[g])
+    except BaseException as exc:
+        for out in written:                        # only files that this call made
+            out.unlink(missing_ok=True)
+        if isinstance(exc, Exception):
+            raise DatasetError(f"the split could not be written, and nothing was kept: {exc}") from exc
+        raise
     return summary

@@ -91,8 +91,8 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
   writer; a skilled forgery goes with the writer it imitates. The order comes from the seed (the SHA-256 of
   `<seed>:<writer id>`), so anyone can repeat the split; write the seed down. Consent decides first: a writer
   who agreed to calibrate only joins the fit group, publish only the test group. At a share of one half the
-  fit group is never the smaller one. It warns about people whose handwriting is in both groups, for example
-  a forger who imitated writers of both groups.
+  fit group is not the smaller one, unless consent decides otherwise; the command then says so. It warns
+  about people whose handwriting is in both groups, for example a forger who imitated writers of both groups.
 
 ```powershell
 .\.venv\Scripts\fhand.exe dataset split data\pilot\manifest.json --seed 20270115 --dry-run

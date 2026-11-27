@@ -214,6 +214,8 @@ def cmd_dataset_split(args) -> int:
     if done["forced"]["fit"] or done["forced"]["test"]:
         _say(f"Placed by consent: {len(done['forced']['fit'])} writer(s) may only calibrate, "
              f"{len(done['forced']['test'])} may only publish.")
+    if done["share_note"]:
+        _say(done["share_note"])
     if done["left_out"]:
         _say(f"Left out: {len(done['left_out'])} writer(s) with no genuine signature that may be used to calibrate "
              "or to publish: " + ", ".join(done["left_out"][:10]) + (" ..." if len(done["left_out"]) > 10 else ""))
