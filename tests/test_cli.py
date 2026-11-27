@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from conftest import fake_tsr
+from conftest import fake_tsr, tiff_with_preview_block
 
 import forensic_hand
 from forensic_hand import tsa
@@ -30,6 +30,15 @@ def test_intake_builds_a_sealed_case_with_a_report(tmp_path, sharp_png, other_pn
     assert (case_dir / "reports" / "report.html").is_file()
     assert (case_dir / "seals" / "seal-0001.json").is_file()
     assert "Q1" in out and "K1" in out and "report.html" in out
+    assert main(["verify", str(case_dir), "--skip-tsa-signature"]) == 0
+
+
+def test_intake_of_a_tiff_with_a_preview_block_finishes(tmp_path, other_png, capsys):
+    # Found on the CVL database: intake added the file, then crashed (TypeError): no check, seal or report.
+    tif = tiff_with_preview_block(tmp_path / "scan.tif")
+    case_dir, rc = _intake(tmp_path, tif, other_png)
+    assert rc == 0 and (case_dir / "reports" / "report.html").is_file()
+    assert (case_dir / "seals" / "seal-0001.json").is_file()
     assert main(["verify", str(case_dir), "--skip-tsa-signature"]) == 0
 
 

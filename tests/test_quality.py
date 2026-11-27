@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from conftest import make_stroke_image, save_image
+from conftest import make_stroke_image, save_image, tiff_with_preview_block
 from PIL import Image
 
 from forensic_hand.quality import analyse_image_file, edge_sharpness, estimate_jpeg_quality
@@ -90,6 +90,25 @@ def test_a_broken_image_file_does_not_crash(tmp_path):
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"not really a png")
     result = analyse_image_file(path)
     assert _codes(result).get("IMG-UNREADABLE") == "warning"
+
+
+def test_a_tiff_with_a_preview_block_is_screened(tmp_path):
+    # Found on the CVL database: 91 TIFF scans with a JPEG preview block crashed the screen (TypeError).
+    path = tiff_with_preview_block(tmp_path / "scan.tif")
+    plain = save_image(tmp_path / "plain.tif", make_stroke_image(), dpi=(300, 300))
+    result, expected = analyse_image_file(path), analyse_image_file(plain)
+    assert result["metrics"]["frames"] == 1 and result["metrics"]["width"] == 1200
+    assert result["metrics"]["sharpness"] == expected["metrics"]["sharpness"]    # the first page is unchanged
+    codes = _codes(result)
+    assert codes.get("IMG-EXTRA-BLOCK") == "info" and "IMG-UNREADABLE" not in codes
+    assert all(f["limits"] for f in result["findings"])
+
+
+def test_a_two_page_tiff_still_counts_two_pages(tmp_path):
+    path = tmp_path / "two.tif"
+    make_stroke_image().save(path, save_all=True, append_images=[make_stroke_image()], dpi=(300, 300))
+    result = analyse_image_file(path)
+    assert result["metrics"]["frames"] == 2 and "IMG-EXTRA-BLOCK" not in _codes(result)
 
 
 def test_every_finding_says_what_it_does_not_prove(tmp_path):

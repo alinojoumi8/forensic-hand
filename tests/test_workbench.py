@@ -16,7 +16,7 @@ import threading
 import numpy as np
 import pikepdf
 import pytest
-from conftest import is_read_only, make_stroke_image, save_image
+from conftest import is_read_only, make_stroke_image, save_image, tiff_with_preview_block
 from PIL import Image, ImageDraw
 
 from forensic_hand import verify_case as vc
@@ -102,6 +102,14 @@ def test_page_geometry_follows_pdf_rotation(tmp_path):
     rec = case.add_evidence(path, role="questioned")
     geo = page_geometry(case, rec)
     assert (geo[0]["width"], geo[0]["height"]) == (792.0, 612.0)
+
+
+def test_a_tiff_with_a_preview_block_has_one_page(tmp_path):
+    # Found on the CVL database: the page count of Pillow fails on a JPEG preview block (TypeError).
+    case = Case.create(tmp_path / "c", title="t")
+    rec = case.add_evidence(tiff_with_preview_block(tmp_path / "scan.tif"), role="questioned")
+    assert page_geometry(case, rec) == [{"page": 1, "units": "px", "width": 1200, "height": 800, "dpi": [300, 300]}]
+    assert render_preview(case, rec, page=1, width=300).size == (300, 200)
 
 
 def test_preview_has_the_asked_width_and_page_shape(wcase):

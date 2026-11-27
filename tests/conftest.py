@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import re
+import struct
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -53,6 +54,35 @@ def make_stroke_image(size=(1200, 800), blur=0.0, mode="L") -> Image.Image:
     if blur:
         img = img.filter(ImageFilter.GaussianBlur(blur))
     return img.convert(mode)
+
+
+def tiff_with_preview_block(path: Path, img: Image.Image | None = None) -> Path:
+    """A one-page TIFF, then a second block that holds only a small JPEG preview (no width, no height).
+
+    Some scanners write this (the CVL database has 91 such files). Pillow cannot count that block as a
+    page: n_frames raises TypeError("Missing dimensions").
+    """
+    img = img if img is not None else make_stroke_image()
+    buf = io.BytesIO()
+    img.save(buf, format="TIFF", dpi=(300, 300))
+    data = bytearray(buf.getvalue())
+    order = "<" if data[:2] == b"II" else ">"
+    ifd0 = struct.unpack(order + "I", data[4:8])[0]
+    next_at = ifd0 + 2 + 12 * struct.unpack(order + "H", data[ifd0:ifd0 + 2])[0]
+    jpeg = io.BytesIO()
+    img.convert("L").resize((40, 30)).save(jpeg, format="JPEG")
+    preview = jpeg.getvalue()
+    data += b"\0" * (len(data) % 2)                                   # a block starts on an even offset
+    ifd1 = len(data)
+    jpeg_at = ifd1 + 2 + 3 * 12 + 4
+    data[next_at:next_at + 4] = struct.pack(order + "I", ifd1)
+    data += struct.pack(order + "H", 3)
+    data += struct.pack(order + "HHIHH", 259, 3, 1, 6, 0)               # Compression: old-style JPEG
+    data += struct.pack(order + "HHII", 513, 4, 1, jpeg_at)             # where the preview starts
+    data += struct.pack(order + "HHII", 514, 4, 1, len(preview))        # how long it is
+    data += struct.pack(order + "I", 0) + preview
+    path.write_bytes(bytes(data))
+    return path
 
 
 def save_image(path: Path, img: Image.Image, **kw) -> Path:
