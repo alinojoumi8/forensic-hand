@@ -74,17 +74,23 @@ def _edge_runs(ink: np.ndarray, length: int) -> np.ndarray:
     return (from_left & keep_left[:, None]) | (from_right & keep_right[:, None])
 
 
-def remove_ruling_lines(ink: np.ndarray, share: float) -> np.ndarray:
+def remove_ruling_lines(ink: np.ndarray, share: float, fixed_minimum: bool = True) -> np.ndarray:
     """Drop long straight horizontal and vertical ink: printed signature lines, form borders, table rules.
 
     Also drops shorter straight pieces that run into the edge of the crop: what is left of a line
     when a pasted picture covers its middle. A straight part of a signature that is as long gets
     dropped too; that happens to both crops of a copy in the same way, so a copy still matches.
+
+    The lengths are shares of the crop size. The copy check also keeps fixed minimums (40 and 20
+    pixels). With fixed_minimum=False the rule is relative only, so a crop and the same crop at twice
+    the resolution lose the same ink (the writer score needs that).
     """
     h, w = ink.shape
-    lines = long_runs(ink, max(40, round(share * w)), axis=1) | long_runs(ink, max(40, round(share * h)), axis=0)
-    lines |= _edge_runs(ink, max(20, round(0.04 * w)))
-    lines |= _edge_runs(ink.T, max(20, round(0.04 * h))).T
+    run_min, edge_min = (40, 20) if fixed_minimum else (2, 2)
+    lines = (long_runs(ink, max(run_min, round(share * w)), axis=1)
+             | long_runs(ink, max(run_min, round(share * h)), axis=0))
+    lines |= _edge_runs(ink, max(edge_min, round(0.04 * w)))
+    lines |= _edge_runs(ink.T, max(edge_min, round(0.04 * h))).T
     return ink & ~lines
 
 
@@ -195,11 +201,12 @@ def separate_inks(img: Image.Image, hue_deg: float = 15.0, min_share: float = 0.
 
 
 def ink_weight(img: Image.Image, min_ink: float, line_share: float = 0.30, separate: bool = True,
-               hue_deg: float = 15.0) -> tuple[np.ndarray, dict] | None:
+               hue_deg: float = 15.0, fixed_minimum: bool = True) -> tuple[np.ndarray, dict] | None:
     """Darkness of the pen ink (0 to 1), cut to the ink. None when there is no clear ink.
 
     A second ink of another colour (a stamp) is removed first, then long straight lines, then the
-    2% of ink farthest from the centre. The copy check and the writer score both start here.
+    2% of ink farthest from the centre. The copy check and the writer score both start here; the
+    writer score passes fixed_minimum=False (see remove_ruling_lines).
     """
     paper = on_white(img)
     if separate:
@@ -207,7 +214,7 @@ def ink_weight(img: Image.Image, min_ink: float, line_share: float = 0.30, separ
     else:
         gray, separation = np.asarray(paper.convert("L"), dtype=np.float32), {"inks": None, "reason": "off"}
     threshold = otsu_threshold(gray)
-    ink = remove_ruling_lines(gray < threshold, line_share)
+    ink = remove_ruling_lines(gray < threshold, line_share, fixed_minimum)
     fraction = float(ink.mean())
     if fraction < min_ink or fraction > 0.6 or gray.max() - gray.min() < 40:
         return None

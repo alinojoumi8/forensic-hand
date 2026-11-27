@@ -65,13 +65,21 @@ def _open(manifest, item) -> Image.Image:
         return img.copy()
 
 
+def _origin(item: dict) -> str:
+    """The clean original an item was made from. A clean item is its own original; a degraded item names
+    its original in `sample` (see datasets.build_from_csv)."""
+    if item["stratum"] == "clean":
+        return item["item_id"]
+    return item.get("sample") or item["item_id"]
+
+
 # ---------------------------------------------------------------- copy check
 
 def _copy_pairs(items: list[dict]) -> dict[str, dict[str, list[tuple[str, str]]]]:
     """Pairs per stratum: positives (original, copy) and three kinds of negatives."""
     originals = sorted((i for i in items if i["stratum"] == "clean" and i["kind"] in ("genuine", "forgery-skilled")),
                        key=lambda i: i["item_id"])
-    questioned = {(i.get("sample") or i["item_id"], i["stratum"]): i["item_id"]
+    questioned = {(_origin(i), i["stratum"]): i["item_id"]
                   for i in items if i["kind"] in ("genuine", "forgery-skilled")}
     by_id = {i["item_id"]: i for i in items}
     writers = sorted({i["writer_id"] for i in originals})
@@ -208,15 +216,14 @@ def score_comparisons(sets, cfg: dict) -> dict[str, dict[str, list]]:
                 genuine.setdefault(item["writer_id"], []).append(item)
             elif item["kind"] == "forgery-skilled":
                 forged.setdefault(item["writer_id"], []).append(item)
-        questioned = {(i.get("sample") or i["item_id"], i["stratum"]): i
-                      for i in items if i["kind"] in ("genuine", "forgery-skilled")}
+        questioned = {(_origin(i), i["stratum"]): i for i in items if i["kind"] in ("genuine", "forgery-skilled")}
         strata = sorted({i["stratum"] for i in items})
         writers = sorted(w for w, g in genuine.items() if len(g) >= k + 1)
         for wi, w in enumerate(writers):
             gen = genuine[w]
             base = [feat(manifest, g) for g in gen[:k]]
 
-            def add(kind, source, knowns, w=w):
+            def add(kind, source, knowns, w=w, manifest=manifest, questioned=questioned, strata=strata):
                 for s in strata:
                     q = questioned.get((source["item_id"], s))
                     if q is not None:
@@ -445,10 +452,10 @@ def _pct(r: dict) -> str:
 
 
 def _writer_html(task: dict) -> str:
-    parts = ["<h2>Writer score (raw)</h2><p class='muted'>A raw research score: it is <strong>not a likelihood "
-             "ratio</strong> and a case cannot use it. 0 means: as close to the known signatures as they are to "
-             f"each other; below 0: farther away. Feature version {_e(task['feature_version'])}, "
-             f"{_e(task['min_known'])} known signatures per comparison.</p>"]
+    parts = [("<h2>Writer score (raw)</h2><p class='muted'>A raw research score: it is <strong>not a likelihood "
+              "ratio</strong> and a case cannot use it. 0 means: as close to the known signatures as they are to "
+              f"each other; below 0: farther away. Feature version {_e(task['feature_version'])}, "
+              f"{_e(task['min_known'])} known signatures per comparison.</p>")]
     if task.get("skipped"):
         parts.append(f"<p>Not measured: {_e(task['skipped'])}.</p>")
         return "".join(parts)
