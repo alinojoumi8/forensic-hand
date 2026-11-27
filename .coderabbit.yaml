@@ -12,6 +12,9 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Also review pull requests into other branches (for example a stacked stage branch), not only main.
+    base_branches:
+      - ".*"
   path_filters:
     - "!cases/**"
     - "!data/**"
