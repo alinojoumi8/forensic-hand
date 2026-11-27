@@ -204,7 +204,9 @@ def score_comparisons(sets, cfg: dict) -> dict[str, dict[str, list]]:
     clean genuine signatures of the writer. A genuine signature is scored against min_known of the
     writer's other genuine signatures; forgeries and the next writer's genuine signatures are scored
     against the first min_known. The questioned item carries the stratum's degradation; the knowns are clean.
-    Each comparison is (score, writer_id) so that later steps can resample by writer.
+    Each comparison is (score, writer_id, source): the writer lets later steps resample by writer, and
+    source ("<set number>:<item id>") names the clean original of the questioned item, so that scans of one
+    signature in several conditions count as one signature.
     """
     k = int(cfg["score_min_known"])
     cache: dict[str, dict | None] = {}
@@ -221,7 +223,7 @@ def score_comparisons(sets, cfg: dict) -> dict[str, dict[str, list]]:
         return writer.compare(q, valid, k)["score"]
 
     out: dict[str, dict[str, list]] = {}
-    for manifest, items in sets:
+    for mi, (manifest, items) in enumerate(sets):
         clean = sorted((i for i in items if i["stratum"] == "clean"), key=lambda i: i["item_id"])
         genuine: dict[str, list[dict]] = {}
         forged: dict[str, list[dict]] = {}
@@ -239,12 +241,12 @@ def score_comparisons(sets, cfg: dict) -> dict[str, dict[str, list]]:
             gen = genuine[w]
             base = [feat(manifest, g) for g in gen[:k]]
 
-            def add(kind, source, knowns, w=w, manifest=manifest, questioned=questioned, strata=strata):
+            def add(kind, source, knowns, w=w, manifest=manifest, questioned=questioned, strata=strata, mi=mi):
                 for s in strata:
                     q = questioned.get((source["item_id"], s))
                     if q is not None:
                         bucket = out.setdefault(s, {"positives": [], **{t: [] for t in SCORE_NEGATIVES}})
-                        bucket[kind].append((score(feat(manifest, q), knowns), w))
+                        bucket[kind].append((score(feat(manifest, q), knowns), w, f"{mi}:{source['item_id']}"))
 
             for g in gen:
                 add("positives", g, [feat(manifest, x) for x in gen if x is not g][:k])
@@ -264,7 +266,7 @@ def writer_score_task(sets, cfg: dict) -> dict:
     if not per_stratum:
         return {**head, "skipped": f"needs {k + 1} or more genuine signatures per writer (clean scans): "
                                    f"{k} as known signatures and 1 as the questioned one"}
-    plain = {s: {kind: [x for x, _ in v] for kind, v in b.items()} for s, b in per_stratum.items()}
+    plain = {s: {kind: [c[0] for c in v] for kind, v in b.items()} for s, b in per_stratum.items()}
     pooled = {kind: [x for b in plain.values() for x in b[kind]] for kind in ("positives", *SCORE_NEGATIVES)}
     return {
         **head,
@@ -280,13 +282,13 @@ def writer_score_task(sets, cfg: dict) -> dict:
 
 # ---------------------------------------------------------------- likelihood ratio
 
-def _forgers(sets, strata, writers) -> int | None:
-    """Different people who made the skilled forgeries in the test. None when any forgery has no forger id."""
-    forgeries = [i for _, items in sets for i in items
-                 if i["kind"] == "forgery-skilled" and i["stratum"] in strata and i["writer_id"] in set(writers)]
-    if not forgeries or any(not i.get("forger_id") for i in forgeries):
+def _forgers(sets, sources) -> int | None:
+    """Different people who made the forgeries that were scored. None when any of them has no forger id."""
+    forger = {f"{mi}:{i['item_id']}": i.get("forger_id") for mi, (_, items) in enumerate(sets) for i in items}
+    ids = {forger.get(s) for s in sources}
+    if not ids or None in ids or "" in ids:
         return None
-    return len({i["forger_id"] for i in forgeries})
+    return len(ids)
 
 
 def lr_task(sets, cfg: dict, calibration: dict) -> dict:
@@ -303,14 +305,15 @@ def lr_task(sets, cfg: dict, calibration: dict) -> dict:
             "model": calibration["model"], "strata": scores["strata"], "outside_conditions": scores["outside"]}
     if not scores["same"] or not scores["diff"]:
         return {**head, "skipped": "no comparisons of both kinds inside the conditions of the calibration"}
-    rows = ([(w, 1, cal.apply(calibration, x, cfg)["log10_lr"], x) for x, w in scores["same"]]
-            + [(w, 0, cal.apply(calibration, x, cfg)["log10_lr"], x) for x, w in scores["diff"]])
-    same = [v for _, y, v, _ in rows if y == 1]
-    diff = [v for _, y, v, _ in rows if y == 0]
+    # Rows: (writer, 1 for the same writer or 0 for Hd, log10 LR, raw score, clean original of the questioned item).
+    rows = ([(w, 1, cal.apply(calibration, x, cfg)["log10_lr"], x, src) for x, w, src in scores["same"]]
+            + [(w, 0, cal.apply(calibration, x, cfg)["log10_lr"], x, src) for x, w, src in scores["diff"]])
+    same = [r[2] for r in rows if r[1] == 1]
+    diff = [r[2] for r in rows if r[1] == 0]
 
     def both(rs):
-        s = [v for _, y, v, _ in rs if y == 1]
-        d = [v for _, y, v, _ in rs if y == 0]
+        s = [r[2] for r in rs if r[1] == 1]
+        d = [r[2] for r in rs if r[1] == 0]
         return (s, d) if s and d else None
 
     def boot_cllr(rs):
@@ -330,20 +333,21 @@ def lr_task(sets, cfg: dict, calibration: dict) -> dict:
         misleading[side] = {"k": m["k"], "n": m["n"], "rate": _r(m["rate"]), "ci95": [_r(v) for v in m["ci95"]],
                             "ci95_writers": [_r(v) for v in metrics.bootstrap(rows, boot_rate(side))]}
     value = metrics.cllr(same, diff)
-    minimum = metrics.cllr_min([x for _, y, _, x in rows if y == 1], [x for _, y, _, x in rows if y == 0])
-    writers = sorted({w for w, *_ in rows})
-    hd_per_writer = {w: sum(1 for w2, y, *_ in rows if w2 == w and y == 0) for w in writers}
+    minimum = metrics.cllr_min([r[3] for r in rows if r[1] == 1], [r[3] for r in rows if r[1] == 0])
+    writers = sorted({r[0] for r in rows})
+    # Distinct signatures, not scans: one forgery scanned in three conditions counts once.
+    hd_per_writer = {w: len({r[4] for r in rows if r[0] == w and r[1] == 0}) for w in writers}
     return {
         **head,
         "pairs": {"same": len(same), "different": len(diff)},
         "writers": len(writers),
         "hd_pairs_min_per_writer": min(hd_per_writer.values()),
-        "forgers": _forgers(sets, scores["strata"], writers) if prop == "skilled-forgery" else None,
+        "forgers": _forgers(sets, {r[4] for r in rows if r[1] == 0}) if prop == "skilled-forgery" else None,
         "writers_overlap": sorted(set(writers) & set(calibration["data"]["writers"])),
         "cllr": _r(value), "cllr_min": _r(minimum), "cllr_cal": _r(value - minimum),
         "cllr_ci95": [_r(v) for v in metrics.bootstrap(rows, boot_cllr)],
         "misleading": misleading,
-        "bounded_share": _r(sum(1 for _, _, v, _ in rows if v in (calibration["model"]["lower"],
+        "bounded_share": _r(sum(1 for r in rows if r[2] in (calibration["model"]["lower"],
                                                                     calibration["model"]["upper"])) / len(rows)),
         "tippett": {"same": sorted(round(v, 4) for v in same), "different": sorted(round(v, 4) for v in diff)},
     }

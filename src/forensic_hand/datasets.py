@@ -83,8 +83,9 @@ def _check_item(item, seen: set) -> None:
         raise DatasetError(f"{item_id}: kind must be one of {', '.join(sorted(KINDS))}")
     if not isinstance(item.get("stratum"), str) or not item["stratum"]:
         raise DatasetError(f"{item_id}: missing stratum")
-    if "forger_id" in item and (not isinstance(item["forger_id"], str) or not item["forger_id"]):
-        raise DatasetError(f"{item_id}: forger_id must be a non-empty text (a pseudonymous id of the forger)")
+    for key in ("forger_id", "forger_consent_id"):
+        if key in item and (not isinstance(item[key], str) or not item[key]):
+            raise DatasetError(f"{item_id}: {key} must be a non-empty text")
 
 
 def check_manifest(data) -> None:
@@ -114,6 +115,11 @@ def check_manifest(data) -> None:
     seen: set = set()
     for item in items:
         _check_item(item, seen)
+    # A degraded scan may name its clean original by the original's sample name, so that name must be unique.
+    names = Counter(i["sample"] for i in items if i["stratum"] == "clean" and i.get("sample"))
+    shared = sorted(name for name, count in names.items() if count > 1)
+    if shared:
+        raise DatasetError(f"two or more clean items share the sample name {shared[0]}; each clean item needs its own")
 
 
 def new_manifest(title, license_class, license_name, items, folder, consent=None, synthetic=False,
@@ -187,14 +193,24 @@ def usable_items(manifest: Manifest, purpose: str) -> tuple[list[dict], dict]:
         return list(manifest.items), {}
     records = {r["consent_id"]: r for r in consent["records"]}
     used, excluded = [], Counter()
-    for item in manifest.items:
-        rec = records.get(item.get("consent_id"))
+
+    def problem(consent_id, who: str) -> str | None:
+        rec = records.get(consent_id)
         if rec is None:
-            excluded["no consent record"] += 1
-        elif rec.get("withdrawn"):
-            excluded["consent withdrawn"] += 1
-        elif purpose not in rec["scopes"]:
-            excluded[f"consent does not cover {purpose}"] += 1
+            return f"no {who}consent record"
+        if rec.get("withdrawn"):
+            return f"{who}consent withdrawn"
+        if purpose not in rec["scopes"]:
+            return f"{who}consent does not cover {purpose}"
+        return None
+
+    for item in manifest.items:
+        # A skilled forgery is the forger's own handwriting: the forger's consent must cover the use too.
+        reason = problem(item.get("consent_id"), "")
+        if reason is None and item.get("forger_id"):
+            reason = problem(item.get("forger_consent_id"), "forger ")
+        if reason:
+            excluded[reason] += 1
         else:
             used.append(item)
     return used, dict(sorted(excluded.items()))
@@ -223,7 +239,8 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
     """Make a manifest for a real collection from a spreadsheet saved as CSV.
 
     items.csv columns: file, writer_id, kind, and optional stratum, consent_id, capture, source_item, item_id,
-    sample, forger_id (who made a skilled forgery; writer_id is the person whose signature it imitates). Set `sample` on a degraded item (for example a blurred scan) to the item_id of its clean original,
+    sample, forger_id (who made a skilled forgery; writer_id is the person whose signature it imitates),
+    forger_consent_id (the forger's own consent record: a forgery is the forger's handwriting). Set `sample` on a degraded item (for example a blurred scan) to the item_id of its clean original,
     so that the validation can pair it; a clean original needs no sample.
     consent.csv columns: consent_id, scopes (separated by ;), date, withdrawn (yes or no).
     Use pseudonymous writer ids. Keep the list of real names somewhere else.
@@ -253,7 +270,7 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
             "capture": (row.get("capture") or "").strip() or None,
             "dpi": _image_dpi(folder / name),
         }
-        for key in ("consent_id", "source_item", "sample", "forger_id"):
+        for key in ("consent_id", "source_item", "sample", "forger_id", "forger_consent_id"):
             if (row.get(key) or "").strip():
                 item[key] = row[key].strip()
         items.append(item)

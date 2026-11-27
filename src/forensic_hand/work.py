@@ -1,4 +1,4 @@
-"""Examiner work in the workbench: crops, notes, measurements, copy check, charts.
+"""Examiner work in the workbench: crops, notes, measurements, copy check, charts, the locked score.
 
 Every action is one ledger event. A file that an action makes (a crop, a chart) is stored by
 its SHA-256 and set to read-only before the event is written. If the event cannot be written,
@@ -7,12 +7,14 @@ a new file is removed again, so the case never holds a file that the ledger does
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import math
 
 from PIL import Image
 
-from . import clones, exhibit, pages
+from . import calibrate, clones, exhibit, pages, release, writer
 from .case import CaseError, _clean, clean_text
 from .config import DEFAULTS
 from .findings import finding
@@ -303,3 +305,170 @@ def make_exhibit(case, title, panels=None, kind="panels", overlay=None) -> dict:
                 "ledger_head_at_creation": head, "file": stored["file"], "sha256": stored["sha256"],
                 "size": stored["size"]}
         return _record(case, "exhibit.created", data, stored)
+
+
+# ---------------------------------------------------------------- the locked score (Stage 4)
+
+SCORE_LIMITS = [
+    ("The likelihood ratio is one input for the examiner. It is not a verdict, and it is not the chance "
+     "that the known writer wrote the signature."),
+    ("It measures the pictures of the crops only: not pen pressure, line quality under magnification, the ink, "
+     "or indentations in the paper. It does not replace an examination of the original document."),
+    ("It holds only for its two propositions and inside the conditions that its test covered. A case outside "
+     "them gets no score."),
+]
+# Quality warnings, and the test condition (stratum) in which a calibration must have been tested to allow them.
+WARNING_STRATA = {"IMG-BLUR": "blur", "IMG-SOFT": "blur", "IMG-JPEG-QUALITY": "jpeg", "IMG-DPI-LOW": "dpi150"}
+ALWAYS_REFUSE = {"IMG-SMALL"}
+LOCKED = ("no released calibration is in this case. A score needs a calibration that passed pass marks, "
+          "written and time stamped before its test, on real and consented signatures (fhand release). "
+          "Add one with: fhand score <case> --release <file> --questioned <crop> --known <crops>")
+
+
+def _checked_release(raw: bytes) -> tuple[dict, dict]:
+    """Parse a release file and run every release check again (release.check_release)."""
+    try:
+        bundle = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        bundle = None
+    if not isinstance(bundle, dict) or bundle.get("kind") != "forensic-hand released calibration":
+        raise CaseError("this file is not a released calibration. A case can use only a release (fhand release); "
+                        "a calibration file alone is never enough")
+    try:
+        facts = release.check_release(bundle)
+    except release.ReleaseError as exc:
+        raise CaseError(str(exc)) from exc
+    return bundle, facts
+
+
+def add_release(case, raw: bytes) -> dict:
+    """Check a release file and keep it in the case (models/, read-only, in the ledger and the next seal)."""
+    bundle, facts = _checked_release(raw)
+    sha = hashlib.sha256(raw).hexdigest()
+    with case.ledger.lock():
+        state = case.state()
+        for rel in state["releases"]:
+            if rel["sha256"] == sha:
+                return rel
+        try:
+            stored = store_bytes(raw, case.path / "models", ".json")
+        except (StoreError, OSError) as exc:
+            raise CaseError(f"the release file could not be stored: {exc}") from exc
+        calibration = bundle["calibration"]
+        data = {"release_id": f"R{len(state['releases']) + 1}", "file": stored["file"], "sha256": stored["sha256"],
+                "size": stored["size"], "calibration_sha256": calibration["results_sha256"],
+                "propositions": calibration["propositions"]["id"], "conditions": calibration["conditions"],
+                "criteria_stamp": facts["criteria_stamp"]["gen_time"],
+                "dossier_stamp": facts["dossier_stamp"]["gen_time"], "summary": facts["summary"]}
+        return _record(case, "release.added", data, stored)
+
+
+def score_status(case) -> dict:
+    state = case.state()
+    if not state["releases"]:
+        return {"locked": True, "reason": LOCKED, "release_id": None, "known_count": None, "conditions": None}
+    rel = state["releases"][-1]
+    return {"locked": False, "reason": None, "release_id": rel["release_id"],
+            "known_count": rel["conditions"]["known_count"], "conditions": rel["conditions"],
+            "propositions": rel["propositions"]}
+
+
+def _condition_problems(state, crops: dict, cond: dict) -> list[str]:
+    problems = []
+    strata = set(cond["strata"])
+    for eid in sorted({c["evidence_id"] for c in crops.values()}):
+        check = state["files"].get(eid)
+        if check is None:
+            problems.append(f"{eid} has not been screened. Run the screens first (fhand check <case>), so that the "
+                            "score can test its conditions")
+            continue
+        for f in check["findings"]:
+            if f["level"] != "warning" or f["code"] not in ALWAYS_REFUSE | set(WARNING_STRATA):
+                continue
+            stratum = WARNING_STRATA.get(f["code"])
+            if f["code"] in ALWAYS_REFUSE or stratum not in strata:
+                problems.append(f"{eid} has the warning {f['code']}" + (f" ({stratum})" if stratum else "")
+                                + f"; the calibration was tested on: {', '.join(sorted(strata))}")
+    low, high = cond["dpi"] if cond.get("dpi") else (None, None)
+    for cid, crop in crops.items():
+        dpi = crop.get("dpi")
+        if not dpi:
+            problems.append(f"{cid}: its resolution is not known, so it cannot be held to the tested resolution")
+        elif low is None:
+            problems.append("the calibration does not record the resolution of its data")
+        elif not all(low * 0.99 <= v <= high * 1.01 for v in dpi[:2]):
+            problems.append(f"{cid}: its resolution ({dpi[0]:g} DPI) is outside the tested range ({low} to {high} DPI)")
+    return problems
+
+
+def run_score(case, questioned, known, release_id=None, config: dict | None = None) -> dict:
+    """The LR of a questioned crop against known crops, with a release that is checked again now."""
+    cfg = config or DEFAULTS
+    state = case.state()
+    if not state["releases"]:
+        raise CaseError(f"the score is locked: {LOCKED}")
+    wanted = release_id or state["releases"][-1]["release_id"]
+    rel = next((r for r in state["releases"] if r["release_id"] == wanted), None)
+    if rel is None:
+        raise CaseError(f"no released calibration with the id {str(wanted)[:_ID_LIMIT]}")
+    raw = (case.path / rel["file"]).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != rel["sha256"]:
+        raise CaseError(f"the release file of {rel['release_id']} was changed in the case folder")
+    bundle, facts = _checked_release(raw)
+    calibration = bundle["calibration"]
+    try:
+        calibrate.check_settings(calibration, cfg)
+    except calibrate.CalibrationError as exc:
+        raise CaseError(str(exc)) from exc
+    cond = calibration["conditions"]
+    k = int(cond["known_count"])
+    if not isinstance(known, list) or len(known) != k:
+        raise CaseError(f"this calibration was tested with exactly {k} known signatures; choose exactly {k} known crops")
+    ids = [questioned, *known]
+    if len(set(map(str, ids))) != len(ids):
+        raise CaseError("each crop may be used only once in a score")
+    crops = {cid: _crop(state, cid) for cid in ids}
+    for cid in known:
+        source = _evidence(state, crops[cid]["evidence_id"])
+        if source["role"] != "known":
+            raise CaseError(f"{cid} must come from a known item; it comes from {source['id']} ({source['role']})")
+    source = _evidence(state, crops[questioned]["evidence_id"])
+    if source["role"] != "questioned":
+        raise CaseError(f"{questioned} must come from a questioned item; it comes from {source['id']} "
+                        f"({source['role']})")
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            if _overlap(crops[a], crops[b]):
+                raise CaseError(f"{a} and {b} share the same area of a page")
+    problems = _condition_problems(state, crops, cond)
+    feats = {}
+    for cid, crop in crops.items():
+        feats[cid] = writer.features(crop_image(case, crop), cfg)
+        if feats[cid] is None:
+            problems.append(f"{cid} has no clear ink")
+        elif feats[cid]["ink_separation"].get("inks") == 2 and not {"stamp", "stamp-same"} & set(cond["strata"]):
+            problems.append(f"{cid} holds a second ink (a stamp); the calibration was not tested with stamps")
+    if problems:
+        raise CaseError("no score: the case is outside what the test of this calibration covered:\n- "
+                        + "\n- ".join(problems))
+    result = writer.compare(feats[questioned], [feats[c] for c in known], k)
+    lr = calibrate.apply(calibration, result["score"], cfg)
+    model = calibration["model"]
+    with case.ledger.lock():
+        state = case.state()
+        data = {
+            "score_id": f"S{len(state['scores']) + 1}", "questioned": questioned, "known": list(known),
+            "release_id": rel["release_id"], "release_sha256": rel["sha256"],
+            "calibration_sha256": calibration["results_sha256"], "propositions": calibration["propositions"],
+            "feature_version": writer.FEATURE_VERSION, "score_settings": calibration["score_settings"],
+            "features": feats, "score": result["score"], "groups": result["groups"],
+            "model": {name: model[name] for name in ("a", "b", "lower", "upper")},
+            "log10_lr": lr["log10_lr"], "unbounded": lr["unbounded"], "bounded": lr["bounded"],
+            "lr_text": calibrate.lr_text(lr["log10_lr"]), "verbal": calibrate.verbal(lr["log10_lr"]),
+            "verbal_source": calibrate.VERBAL_SOURCE, "conditions": cond,
+            "release_facts": {"criteria_stamp": facts["criteria_stamp"]["gen_time"],
+                              "dossier_stamp": facts["dossier_stamp"]["gen_time"], "summary": facts["summary"]},
+            "limits": SCORE_LIMITS,
+        }
+        case.ledger.append("score.computed", data)
+        return data

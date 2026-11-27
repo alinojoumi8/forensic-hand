@@ -214,6 +214,47 @@ def _work_html(case, state) -> str:
     return "".join(parts)
 
 
+def _score_html(state) -> str:
+    parts = []
+    if not state["scores"]:
+        if state["releases"]:
+            parts.append("<p>A released calibration is in the case, but no score was made.</p>")
+        else:
+            parts.append('<p><span class="tag notice">Note</span> <strong>No score.</strong> A score needs a calibration '
+                         "that passed pass marks, written and time stamped before its test, on real and consented "
+                         "signatures (a release). This case has none, so the method is not validated for it.</p>")
+        return "".join(parts)
+    releases = {r["release_id"]: r for r in state["releases"]}
+    for s in state["scores"]:
+        rel = releases.get(s["release_id"], {})
+        summary = (s.get("release_facts") or {}).get("summary") or {}
+        mis = summary.get("misleading") or {}
+        cond = s["conditions"]
+        bound = " (held at a bound: the test data cannot support a stronger value)" if s["bounded"] else ""
+        rows = [
+            ("Questioned crop", s["questioned"]), ("Known crops", ", ".join(s["known"])),
+            ("Hp", s["propositions"]["hp"]), ("Hd", s["propositions"]["hd"]),
+            ("Likelihood ratio", f"{s['lr_text']} (log10 LR {s['log10_lr']:+.2f}){bound}"),
+            ("Verbal equivalent", f"{s['verbal']} ({s['verbal_source']})"),
+            ("Raw score", f"{s['score']} (0: as close to the known crops as they are to each other)"),
+            ("Tested conditions", (f"{', '.join(cond['strata'])}; {cond['dpi'][0]} to {cond['dpi'][1]} DPI; "
+                                   f"{cond['known_count']} known signatures")),
+            ("Pass marks time stamped", rel.get("criteria_stamp")), ("Test time stamped", rel.get("dossier_stamp")),
+            ("Test result", (f"Cllr {summary.get('cllr')} (95% by writers {summary.get('cllr_ci95')}); "
+                             f"misleading for Hp {(mis.get('hp') or {}).get('rate')}, "
+                             f"for Hd {(mis.get('hd') or {}).get('rate')}; {summary.get('writers')} writers")),
+            ("Release file", f"{s['release_id']}, SHA-256 {s['release_sha256']}"),
+            ("Calibration", s["calibration_sha256"]),
+        ]
+        parts.append(f"<h3>Score {_e(s['score_id'])}</h3>{_facts_table(rows)}")
+        parts.append("<p><strong>The examiner decides.</strong> What the LR does not show:</p><ul>"
+                     + "".join(f"<li>{_e(x)}</li>" for x in s["limits"]) + "</ul>")
+    parts.append('<p class="muted">An LR of 100 means: the measures are 100 times more likely if Hp is true than if '
+                 "Hd is true. It is not the chance that Hp is true. The checker recomputes each LR from its raw "
+                 "score and the release file.</p>")
+    return "".join(parts)
+
+
 def build_report(case) -> tuple[str, dict]:
     """Return (html, data). This reads the case. It writes nothing."""
     state = case.state()
@@ -239,6 +280,8 @@ def build_report(case) -> tuple[str, dict]:
         "notes": state["notes"],
         "clone_check": state["clone_check"],
         "exhibits": state["exhibits"],
+        "releases": state["releases"],
+        "scores": state["scores"],
     }
 
     parts: list[str] = []
@@ -248,7 +291,8 @@ def build_report(case) -> tuple[str, dict]:
         f'made {_e(generated)} (clock of this computer) &middot; {_e(TOOL_NAME)} {_e(__version__)}</p>')
     add('<div class="banner"><strong>This report is not an opinion about who wrote a signature.</strong> '
         "It records which files came in, proves that they did not change, and lists screening notes for a "
-        "qualified examiner. Each note is a lead to check, with its limits. No note is proof alone.</div>")
+        "qualified examiner. Each note is a lead to check, with its limits. No note is proof alone. "
+        "A likelihood ratio, when the report has one (section 7), is one input for the examiner, not a verdict.</div>")
 
     # ---- integrity
     add("<h2>1. Is the case file intact?</h2>")
@@ -322,8 +366,12 @@ def build_report(case) -> tuple[str, dict]:
     add("<h2>6. Examiner work</h2>")
     add(_work_html(case, state))
 
+    # ---- score
+    add("<h2>7. Score (likelihood ratio)</h2>")
+    add(_score_html(state))
+
     # ---- method
-    add("<h2>7. Method and settings</h2>")
+    add("<h2>8. Method and settings</h2>")
     env = state["env"]
     if env:
         packages = ", ".join(f"{k} {v}" for k, v in sorted(env["packages"].items()))

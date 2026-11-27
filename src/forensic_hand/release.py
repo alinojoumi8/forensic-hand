@@ -112,7 +112,7 @@ def _check_files(files: dict[str, bytes]) -> tuple[list[str], dict]:
     if marks_record.get("criteria_sha256") != criteria.sha256:
         problems.append("the dossier was not made with these pass marks (validate --criteria)")
     lr = (dossier.get("tasks") or {}).get("lr")
-    results = []
+    results, summary = [], None
     if not isinstance(lr, dict) or lr.get("skipped"):
         problems.append("the dossier holds no likelihood-ratio test (validate --calibration)")
     else:
@@ -122,8 +122,11 @@ def _check_files(files: dict[str, bytes]) -> tuple[list[str], dict]:
             problems.append(f"{len(lr['writers_overlap'])} writer(s) of the test were also used to calibrate")
         try:
             results = prereg.evaluate(criteria["marks"], lr)
+            summary = {"cllr": lr["cllr"], "cllr_ci95": lr["cllr_ci95"], "misleading": lr["misleading"],
+                       "pairs": lr["pairs"], "writers": lr["writers"], "strata": lr["strata"]}
         except (KeyError, TypeError, IndexError) as exc:
-            problems.append(f"the likelihood-ratio test in the dossier is not complete: {exc}")
+            results = []
+            problems.append(f"the likelihood-ratio test in the dossier is not complete (missing {exc})")
         for r in results:
             if not r["pass"]:
                 problems.append(f"pass mark {r['mark']} failed: {r['value'] if r['value'] is not None else r['note']} "
@@ -136,10 +139,7 @@ def _check_files(files: dict[str, bytes]) -> tuple[list[str], dict]:
                         f"({criteria_stamp['gen_time']}), or at the same second")
     facts.update({"criteria_sha256": criteria.sha256, "criteria_stamp": criteria_stamp,
                   "dossier_sha256": hashlib.sha256(files["dossier.json"]).hexdigest(),
-                  "dossier_stamp": dossier_stamp, "marks": results,
-                  "summary": None if not isinstance(lr, dict) or lr.get("skipped") else {
-                      "cllr": lr["cllr"], "cllr_ci95": lr["cllr_ci95"], "misleading": lr["misleading"],
-                      "pairs": lr["pairs"], "writers": lr["writers"], "strata": lr["strata"]}})
+                  "dossier_stamp": dossier_stamp, "marks": results, "summary": summary})
     return problems, facts
 
 
@@ -193,9 +193,10 @@ def save_release(bundle: dict, path) -> None:
 
 
 def load_release(path) -> dict:
+    """Read a release file and check it again. Its facts are the ones just checked, never the stored ones."""
     try:
         bundle = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ReleaseError(f"the release file cannot be read: {exc}") from exc
-    check_release(bundle)
-    return bundle
+    facts = check_release(bundle)
+    return {**bundle, "facts": {k: v for k, v in facts.items() if k != "calibration"}}

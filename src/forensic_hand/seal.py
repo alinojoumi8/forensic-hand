@@ -63,9 +63,10 @@ def _append_or_undo(case, kind: str, data: dict, path, wrote_file: bool) -> None
 # ---------------------------------------------------------------- seal
 
 def made_files(state: dict) -> list[dict]:
-    """Files that the tool made (crops, charts), in ledger order."""
+    """Files that the tool made or took in (crops, charts, released calibrations)."""
     return ([{"id": c["crop_id"], "sha256": c["sha256"]} for c in state["crops"]]
-            + [{"id": x["exhibit_id"], "sha256": x["sha256"]} for x in state["exhibits"]])
+            + [{"id": x["exhibit_id"], "sha256": x["sha256"]} for x in state["exhibits"]]
+            + [{"id": r["release_id"], "sha256": r["sha256"]} for r in state["releases"]])
 
 
 def seal_bytes(state: dict, number: int, seq: int, head: str) -> bytes:

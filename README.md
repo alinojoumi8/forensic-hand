@@ -19,7 +19,8 @@ It helps a human examiner. **It does not decide if a signature is genuine.**
 
 ## What it does not do
 
-- No verdict. No match score. No machine learning model.
+- No verdict. No machine learning model. No score unless a calibration passed its pre-registered test on
+  real, consented data (Stage 4); until then every case says "No score".
 - It cannot replace an examination of the original paper. The report says this each time.
 - The screening values are **not validated on real casework**. A qualified examiner decides.
 
@@ -137,6 +138,26 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
 - **Synthetic results are not error rates on real casework.** The dossier says so. To collect real,
   consented data, see `docs/validation/collection-protocol.md`.
 
+## Score in a case (Stage 4)
+
+A case shows a likelihood ratio only with a release file. Without one, the report says **No score**,
+and the workbench Score button says **Locked**.
+
+```powershell
+.\.venv\Scripts\fhand.exe score cases\my-case --release data\release.json --questioned C1 --known C2 C3 C4 C5 C6
+```
+
+- The release is checked again each time: every release check, and the signatures of its two time stamps.
+- The case must be inside what the test covered, or there is no score: exactly the tested number of known
+  crops (from known items), a questioned crop from a questioned item, the tested resolution range, no quality
+  warning for a condition that was not tested, no stamp when stamps were not tested. Run `fhand check` first.
+- The release file is kept in the case (`models/`, read-only) and listed in the next seal. The score, its
+  measures, the LR, the propositions and the release facts are one ledger event.
+- The checker (`verify_case.py`) tests the release's time stamps and recomputes each LR from its recorded raw
+  score. It does not measure the crops again: that needs this app.
+- The report shows the LR, a verbal equivalent (after the ENFSI 2015 scale; check the scale your laboratory
+  uses), the propositions, the tested conditions, the test results and the limits. **The examiner decides.**
+
 ## Commands
 
 | Command | What it does |
@@ -160,6 +181,7 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
 | `fhand prereg CALIBRATION --test MANIFEST --out FILE [--cllr-max 0.5 ...]` | Write the pass marks before the test |
 | `fhand stamp-file FILE` | Get a trusted time stamp for a file (sends one hash out) |
 | `fhand release --calibration C --criteria M --dossier D --out FILE` | Release a calibration that passed every check |
+| `fhand score CASE --release FILE --questioned CROP --known CROP...` | Likelihood ratio for a questioned crop |
 
 ## Check a case
 

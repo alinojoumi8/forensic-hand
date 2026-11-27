@@ -35,7 +35,7 @@ from .ledger import LedgerError
 from .pages import page_geometry, render_preview
 from .report import write_report
 from .seal import SealError, create_seal, timestamp_seal
-from .work import add_crop, add_measurement, add_note, make_exhibit, run_clone_check
+from .work import add_crop, add_measurement, add_note, make_exhibit, run_clone_check, run_score, score_status
 
 MAX_BODY = 256 * 1024
 STATIC = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -99,6 +99,10 @@ class WorkbenchApp:
             "seals": [{"seal_no": s["seal_no"], "sha256": s["sha256"], "created": s["created"],
                        "timestamp": (s["timestamp"] or {}).get("gen_time")} for s in state["seals"]],
             "report": (self.case_path / "reports" / "report.html").is_file(),
+            "score": score_status(case),
+            "scores": [{k: s.get(k) for k in ("score_id", "questioned", "known", "release_id", "log10_lr", "lr_text",
+                                              "verbal", "bounded", "score", "created")}
+                       | {"hp": s["propositions"]["hp"], "hd": s["propositions"]["hd"]} for s in state["scores"]],
         }
 
     # ------------------------------------------------------------ actions
@@ -118,6 +122,8 @@ class WorkbenchApp:
         if path == "/api/exhibit":
             return make_exhibit(case, body.get("title"), panels=body.get("panels"),
                                 kind=body.get("kind", "panels"), overlay=body.get("overlay"))
+        if path == "/api/score":
+            return run_score(case, body.get("questioned"), body.get("known"), body.get("release_id"))
         if path == "/api/report":
             report = write_report(case)
             return {"report": report.name}

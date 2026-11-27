@@ -288,6 +288,26 @@ def cmd_release(args) -> int:
     return 0
 
 
+def cmd_score(args) -> int:
+    from .work import add_release, run_score
+
+    case = Case.open(args.case)
+    try:
+        raw = Path(args.release).read_bytes()
+    except OSError as exc:
+        raise CaseError(f"the release file cannot be read: {exc}") from exc
+    rel = add_release(case, raw)
+    s = run_score(case, args.questioned, args.known, rel["release_id"])
+    _say(f"Score {s['score_id']}: {s['questioned']} against {', '.join(s['known'])} (release {rel['release_id']})")
+    _say(f"Hp: {s['propositions']['hp']}")
+    _say(f"Hd: {s['propositions']['hd']}")
+    bound = " (held at a bound of the test data)" if s["bounded"] else ""
+    _say(f"LR {s['lr_text']} (log10 {s['log10_lr']:+.2f}){bound}: {s['verbal']}")
+    _say(f"Raw score {s['score']}. Pass marks stamped {rel['criteria_stamp']}; test stamped {rel['dossier_stamp']}.")
+    _say("The examiner decides. The LR is one input, not a verdict. The report (section 7) lists its limits.")
+    return 0
+
+
 def cmd_serve(args) -> int:
     import webbrowser
 
@@ -476,6 +496,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dossier", required=True, help="the test dossier.json; its stamp is dossier.json.tsr")
     p.add_argument("--out", required=True, help="new release file (JSON)")
     p.set_defaults(func=cmd_release)
+
+    p = sub.add_parser("score", help="likelihood ratio for a questioned crop (needs a released calibration)")
+    p.add_argument("case")
+    p.add_argument("--release", required=True, help="the release file (fhand release); it is checked again")
+    p.add_argument("--questioned", required=True, metavar="CROP", help="crop of the questioned signature, e.g. C1")
+    p.add_argument("--known", nargs="+", required=True, metavar="CROP", help="crops of known signatures")
+    p.set_defaults(func=cmd_score)
     return parser
 
 

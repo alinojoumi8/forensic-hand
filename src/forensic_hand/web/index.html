@@ -24,6 +24,7 @@
   </nav>
   <div class="actions">
     <button class="btn" id="btnClones" title="Look for crops that match point for point">Copy check</button>
+    <button class="btn" id="btnScore" title="Likelihood ratio for a questioned crop (locked until a release is added)">Score</button>
     <button class="btn" id="btnSeal" title="Seal the present state of the case">Seal</button>
     <button class="btn primary" id="btnReport" title="Write and open the report">Report</button>
   </div>
@@ -172,6 +173,14 @@
       <button class="btn" value="cancel">Cancel</button>
       <button class="btn primary" value="ok">Save chart</button>
     </div>
+  </form>
+</dialog>
+
+<dialog id="dlgScore">
+  <form method="dialog" class="dlg wide">
+    <h3>Score (likelihood ratio)</h3>
+    <div id="scoreBody"></div>
+    <div class="dlg-actions"><button class="btn" value="ok">Close</button></div>
   </form>
 </dialog>
 

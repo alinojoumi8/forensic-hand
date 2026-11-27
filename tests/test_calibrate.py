@@ -265,6 +265,15 @@ def test_the_validation_measures_the_lr_on_new_data(lr_dossier, calibration):
     assert len(task["tippett"]["same"]) == 12 and task["tippett"]["same"] == sorted(task["tippett"]["same"])
 
 
+def test_scans_of_one_forgery_in_several_conditions_count_as_one_forgery(tmp_path, calibration):
+    # CodeRabbit review 12: the clean and the blurred scan of one forgery are one forgery, not two.
+    synth.generate_dataset(tmp_path, writers=2, genuine=4, forgeries=1, seed=36, strata=("clean", "blur"),
+                           writer_prefix="r")
+    task = run_validation([tmp_path / "manifest.json"], purpose="benchmark", config=CFG, blur_samples=1,
+                          jpeg_samples=1, calibration=calibration)["tasks"]["lr"]
+    assert task["pairs"]["different"] == 4 and task["hd_pairs_min_per_writer"] == 1
+
+
 def test_strata_outside_the_calibration_are_not_measured(tmp_path, calibration):
     synth.generate_dataset(tmp_path, writers=2, genuine=4, forgeries=1, seed=35, strata=("clean", "jpeg"),
                            writer_prefix="x")

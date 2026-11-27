@@ -68,7 +68,9 @@ separates inks by colour, and its hue rule was set on synthetic inks only.
 
 `items.csv` columns: `file, writer_id, kind, stratum, consent_id, capture, source_item, item_id, sample, forger_id`.
 For a skilled forgery, `writer_id` is the person whose signature is imitated, and `forger_id` is a
-pseudonymous id of the person who made it. A release needs forgeries by 2 or more forgers.
+pseudonymous id of the person who made it. A release needs forgeries by 2 or more forgers. A forgery is
+the forger's own handwriting, so it also needs `forger_consent_id`: the forger's consent record. When the
+dataset needs consent, a forgery without a valid forger consent is left out.
 For a degraded version of an item (for example the same sheet scanned at 150 DPI, `stratum` `dpi150`),
 set `sample` to the `item_id` of the clean original. The validation uses this link to pair items.
 `consent.csv` columns: `consent_id, scopes, date, withdrawn` (scopes separated by `;`).

@@ -12,6 +12,8 @@ What it checks
     2. Each evidence file has the size and the hashes that the ledger recorded.
     3. Each seal file matches the ledger, and no seal file is missing from the ledger.
     4. Each time stamp token is for its seal file. OpenSSL checks the signature of the token.
+    5. Each released calibration (Stage 4): its two time stamps are for its files and in the right
+       order, and each likelihood ratio follows from its recorded raw score (arithmetic only).
 
 Exit codes
     0 OK, 1 problems found, 3 incomplete (no problem found, but a check that was asked for could not run).
@@ -31,6 +33,7 @@ Ledger line format
 from __future__ import annotations
 
 import argparse
+import base64
 import calendar
 import hashlib
 import json
@@ -56,7 +59,10 @@ TSR_PATH = re.compile(r"^seals/seal-\d{4}\.tsr$")
 MADE_FILES = {
     "crop.created": ("crop_id", "derived", re.compile(r"^derived/[0-9a-f]{64}\.png$")),
     "exhibit.created": ("exhibit_id", "exhibits", re.compile(r"^exhibits/[0-9a-f]{64}\.png$")),
+    # A released calibration that the case took in (Stage 4). The checker also tests each LR made with it.
+    "release.added": ("release_id", "models", re.compile(r"^models/[0-9a-f]{64}\.json$")),
 }
+RELEASE_STAMPED = ("criteria.json", "dossier.json")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -370,7 +376,7 @@ def verify_case(case_dir, ca_file=None, openssl=None, check_tsa_signature=True) 
     notes: list[str] = []
     unchecked: list[str] = []
     summary = {"ledger_entries": 0, "ledger_head": ZERO_HASH, "evidence_files": 0, "made_files": 0, "seals": 0,
-               "timestamps": 0, "timestamps_signature_ok": 0, "last_seal": None}
+               "timestamps": 0, "timestamps_signature_ok": 0, "last_seal": None, "scores": 0}
     try:
         _verify(Path(case_dir), problems, notes, unchecked, summary, ca_file, openssl, check_tsa_signature)
     except Exception as exc:  # noqa: BLE001 - fail closed
@@ -396,6 +402,7 @@ def _verify(root: Path, problems, notes, unchecked, summary, ca_file, openssl, c
 
     _check_evidence(root, entries, problems, summary)
     _check_made_files(root, entries, problems, summary)
+    _check_scores(root, entries, problems, notes, unchecked, summary, ca_file, openssl, check_signature)
     seals = _check_seals(root, entries, problems, summary)
     _check_timestamps(root, entries, seals, problems, notes, unchecked, summary, ca_file, openssl, check_signature)
 
@@ -483,6 +490,91 @@ def _check_made_files(root: Path, entries: list[dict], problems: list[str], summ
             for path in sorted(folder.iterdir()):
                 if f"{folder_name}/{path.name}" not in by_path:
                     problems.append(f"{folder_name} folder holds a file that the ledger does not know: {path.name}")
+
+
+def _check_release_stamps(label, bundle, problems, notes, unchecked, ca_file, openssl, check_signature) -> None:
+    """The two time stamps inside a release: each is for its file, and the test came after the pass marks."""
+    try:
+        files = {name: base64.b64decode(bundle["files"][name], validate=True)
+                 for stem in RELEASE_STAMPED for name in (stem, stem + ".tsr")}
+    except (KeyError, TypeError, ValueError):
+        problems.append(f"release {label}: the files inside the release file cannot be read")
+        return
+    epochs = {}
+    for stem in RELEASE_STAMPED:
+        try:
+            info = parse_timestamp_response(files[stem + ".tsr"])
+        except ValueError as exc:
+            problems.append(f"release {label}: the time stamp of {stem}: {exc}")
+            return
+        digest = sha256_hex(files[stem])
+        if not info["granted"] or info["hash_oid"] != OID_SHA256 or info["imprint"] != digest:
+            problems.append(f"release {label}: the time stamp of {stem} is not for that file")
+            return
+        epochs[stem] = info["gen_time_epoch"]
+        if not check_signature:
+            notes.append(f"release {label}: {stem} time stamped {info['gen_time']}; signature not checked (skipped)")
+            continue
+        status, detail = openssl_verify_timestamp(files[stem + ".tsr"], digest, info, ca_file, openssl)
+        if status == "failed":
+            problems.append(f"release {label}: the time stamp signature of {stem} check FAILED: {detail}")
+        elif status != "ok":
+            unchecked.append(f"release {label}: the signature of the {stem} time stamp could not be checked: {detail}")
+    if not epochs["dossier.json"] > epochs["criteria.json"]:
+        problems.append(f"release {label}: its test was time stamped before its pass marks")
+
+
+def _check_scores(root, entries, problems, notes, unchecked, summary, ca_file, openssl, check_signature) -> None:
+    """Each likelihood ratio must follow from its recorded raw score and its released calibration.
+
+    The raw score itself needs forensic-hand to measure the crops again; this checker uses arithmetic only.
+    """
+    releases: dict[str, dict] = {}
+    for entry in entries:
+        data = entry["data"]
+        if entry["type"] == "release.added":
+            label, name = _label(data.get("release_id")), data.get("file")
+            if not isinstance(name, str) or not MADE_FILES["release.added"][2].match(name) or not (root / name).is_file():
+                continue                       # the check of the made files reports it
+            raw = _read(root / name, f"release {label}", problems)
+            if raw is None or sha256_hex(raw) != data.get("sha256"):
+                continue                       # the check of the made files reports it
+            try:
+                bundle = json.loads(raw.decode("utf-8"))
+                ok = (bundle["kind"] == "forensic-hand released calibration" and bundle["status"] == "released"
+                      and isinstance(bundle["calibration"]["model"], dict))
+            except (UnicodeDecodeError, ValueError, KeyError, TypeError):
+                ok = False
+            if not ok:
+                problems.append(f"release {label}: the file is not a released calibration")
+                continue
+            _check_release_stamps(label, bundle, problems, notes, unchecked, ca_file, openssl, check_signature)
+            releases[data["sha256"]] = bundle
+        elif entry["type"] == "score.computed":
+            label = _label(data.get("score_id"))
+            bundle = releases.get(data.get("release_sha256"))
+            if bundle is None:
+                problems.append(f"score {label}: its released calibration is not in the case before it")
+                continue
+            calibration = bundle["calibration"]
+            model = calibration.get("model") or {}
+            if calibration.get("results_sha256") != data.get("calibration_sha256") or \
+                    {k: model.get(k) for k in ("a", "b", "lower", "upper")} != data.get("model"):
+                problems.append(f"score {label}: the calibration in the ledger is not the one in its release file")
+                continue
+            try:
+                raw_lr = float(model["a"]) * float(data["score"]) + float(model["b"])
+                expected = min(float(model["upper"]), max(float(model["lower"]), raw_lr))
+                follows = abs(expected - float(data["log10_lr"])) <= 1e-6
+            except (KeyError, TypeError, ValueError):
+                follows = False
+            if not follows:
+                problems.append(f"score {label}: its LR does not follow from its score and the released calibration")
+                continue
+            summary["scores"] += 1
+    if summary["scores"]:
+        notes.append(f"{summary['scores']} likelihood ratio(s) recomputed from the recorded raw scores; the raw "
+                     "scores themselves need forensic-hand to measure the crops again")
 
 
 def _check_seals(root: Path, entries: list[dict], problems: list[str], summary: dict) -> dict[int, dict]:

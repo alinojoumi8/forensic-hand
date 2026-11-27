@@ -294,6 +294,9 @@ function renderInspector() {
     parts.push(el("section", {}, el("h2", { text: "Case notes from screening" }),
       S.case_findings ? (S.case_findings.length ? el("div", {}, ...S.case_findings.map(findingNode)) : el("p", { class: "muted", text: "Nothing to report." }))
         : el("p", { class: "muted", text: "Not checked yet." })));
+    parts.push(el("section", {}, el("h2", { text: "Score" }),
+      S.scores.length ? el("div", {}, ...S.scores.map(scoreLine))
+        : el("p", { class: "muted", text: S.score.locked ? "Locked: no released calibration in this case." : "No score yet." })));
     if (S.clone_check) {
       parts.push(el("section", {}, el("h2", { text: "Copy check" }),
         S.clone_check.findings.length ? el("div", {}, ...S.clone_check.findings.map(findingNode)) : el("p", { class: "muted", text: `No near-identical crops among ${S.clone_check.crops.length}.` })));
@@ -926,8 +929,52 @@ function clonesDialog(result) {
   $("#dlgClones").showModal();
 }
 
+function scoreLine(s) {
+  return el("div", { class: "note" },
+    el("strong", { text: `${s.score_id}: LR ${s.lr_text}` }),
+    el("span", { text: ` (log10 ${s.log10_lr >= 0 ? "+" : ""}${s.log10_lr.toFixed(2)})${s.bounded ? ", held at a bound" : ""} · ${s.verbal}` }),
+    el("div", { class: "meta", text: `${s.questioned} against ${s.known.join(", ")} · release ${s.release_id} · ${s.created}` }));
+}
+
+function scoreDialog() {
+  const body = $("#scoreBody");
+  const status = S.score;
+  const parts = [];
+  if (status.locked) {
+    parts.push(el("p", {}, el("strong", { text: "Locked. " }), el("span", { text: `No score: ${status.reason}` })));
+  } else {
+    const k = status.known_count;
+    const role = (c) => (evidence(c.evidence_id) || {}).role;
+    const questioned = S.crops.filter((c) => role(c) === "questioned");
+    const known = S.crops.filter((c) => role(c) === "known");
+    const pick = el("select", { id: "scoreQ" }, ...questioned.map((c) => el("option", { value: c.crop_id, text: `${c.crop_id} (${c.evidence_id})` })));
+    const boxes = known.map((c) => el("label", { class: "check" },
+      el("input", { type: "checkbox", value: c.crop_id, "data-known": "1" }), ` ${c.crop_id} (${c.evidence_id})`));
+    const go = el("button", { class: "btn primary", type: "button", text: "Compute" });
+    go.onclick = async () => {
+      const chosen = [...body.querySelectorAll("input[data-known]:checked")].map((i) => i.value);
+      if (!pick.value) return toast("Make a crop of the questioned signature first.", true);
+      if (chosen.length !== k) return toast(`Choose exactly ${k} known crops: the calibration was tested with ${k}.`, true);
+      go.disabled = true;
+      const done = await act(() => api("/api/score", { questioned: pick.value, known: chosen, release_id: status.release_id }),
+        (s) => `${s.score_id}: LR ${s.lr_text}.`);
+      go.disabled = false;
+      if (done) scoreDialog();
+    };
+    parts.push(
+      el("p", { class: "muted", text: `Release ${status.release_id}. Tested conditions: ${status.conditions.strata.join(", ")}; ${status.conditions.dpi.join(" to ")} DPI. The release is checked again for each score.` }),
+      el("label", { class: "field" }, "Questioned crop ", pick),
+      el("p", { text: `Known crops (exactly ${k}):` }), el("div", { class: "group" }, ...boxes), go);
+  }
+  if (S.scores.length) parts.push(el("h3", { text: "Scores in this case" }), ...S.scores.map(scoreLine));
+  parts.push(el("p", { class: "muted small", text: "An LR of 100 means: the measures are 100 times more likely if the known writer wrote the signature (Hp) than if someone else did (Hd). It is not the chance that Hp is true. The examiner decides." }));
+  body.replaceChildren(...parts);
+  if (!$("#dlgScore").open) $("#dlgScore").showModal();
+}
+
 function initActions() {
   document.querySelectorAll(".tabs [data-tab]").forEach((b) => { b.onclick = () => showTab(b.dataset.tab); });
+  $("#btnScore").onclick = () => scoreDialog();
   $("#btnClones").onclick = async () => {
     if (S.crops.length < 2) return toast("Make at least two crops first.", true);
     $("#btnClones").disabled = true;

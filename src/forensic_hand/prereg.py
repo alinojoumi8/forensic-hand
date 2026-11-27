@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from . import TOOL_NAME, __version__, tsa
@@ -72,9 +73,7 @@ def write_criteria(calibration: dict, test_manifests, marks: dict | None = None,
     missing = sorted(set(DEFAULT_MARKS) - set(marks))
     if missing:
         raise PreregError(f"pass mark(s) missing: {', '.join(missing)}")
-    for name, value in marks.items():
-        if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
-            raise PreregError(f"the pass mark {name} must be a number of 0 or more")
+    _check_values(marks)
     test_data = []
     for path in test_manifests:
         manifest = load_manifest(path)
@@ -94,8 +93,14 @@ def write_criteria(calibration: dict, test_manifests, marks: dict | None = None,
     }
 
 
+def _check_values(marks: dict) -> None:
+    for name, value in marks.items():
+        if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
+            raise PreregError(f"the pass mark {name} must be a finite number of 0 or more, not {value!r}")
+
+
 def save_criteria(body: dict, path) -> None:
-    data = (json.dumps(body, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii")
+    data = (json.dumps(body, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode("ascii")
     write_new(path, data, PreregError)
 
 
@@ -109,6 +114,7 @@ def parse_criteria(raw: bytes) -> Criteria:
     marks = body.get("marks")
     if not isinstance(marks, dict) or set(marks) != set(DEFAULT_MARKS):
         raise PreregError("the pass marks file does not hold every mark")
+    _check_values(marks)
     out = Criteria(body)
     out.sha256 = hashlib.sha256(raw).hexdigest()
     return out

@@ -155,6 +155,7 @@ class Case:
             "evidence": [], "files": {}, "case_findings": None, "checked_at": None, "env": None,
             "seals": [],
             "crops": [], "notes": [], "measurements": [], "clone_check": None, "exhibits": [],
+            "releases": [], "scores": [],
             "ledger_count": len(entries),
             "ledger_head": entries[-1]["hash"] if entries else ZERO_HASH,
         }
@@ -198,4 +199,8 @@ class Case:
                 state["clone_check"] = {**data, "checked": entry["time"]}
             elif kind == "exhibit.created":
                 state["exhibits"].append({**data, "created": entry["time"]})
+            elif kind == "release.added":
+                state["releases"].append({**data, "added": entry["time"]})
+            elif kind == "score.computed":
+                state["scores"].append({**data, "created": entry["time"]})
         return state

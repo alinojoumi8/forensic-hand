@@ -15,7 +15,10 @@ All data in these tests is synthetic. It proves the logic. It is not proof on re
    nobody can choose the marks after seeing the results.
 5. As the other side's expert, I want a release file that holds every file of the test, so that I
    can run the same release checks again.
-6. (Phase 4 adds its journeys below.)
+6. As an examiner, I want the score to stay locked in my case until a release is added, and to be
+   refused when my case is outside what the test covered, so that I never quote an untested number.
+7. As the other side's expert, I want the checker to recompute every LR in the case, so that I can
+   see that each one follows from its score and its released calibration.
 
 ## Phase 1: measures and raw score (branch `feat/stage4-writer-score`)
 
@@ -130,6 +133,45 @@ tokens from an independent library, and their signature check is patched in `tes
 | 12 | Refused: a release file changed after the release | `test_a_changed_release_file_is_refused` |
 | 13 | Forger ids come from the collection spreadsheet | `test_forger_ids_come_from_the_collection_spreadsheet` |
 | 14 | `prereg`, `stamp-file`, `validate --criteria` and `release` work end to end; a demo is refused | `test_the_prereg_stamp_validate_and_release_commands` |
+
+### CodeRabbit review 12 (phase 3 and the review 11 fixes): 8 findings
+
+| Finding | Result | Test (RED, then GREEN) |
+|---|---|---|
+| An incomplete LR task crashed the release with a KeyError | Fixed: the summary is built only from a complete task; the release refuses | `test_an_incomplete_lr_test_is_refused_without_a_crash` (RED: KeyError) |
+| The release printed a hint for `fhand score`, which did not exist | Fixed by phase 4 (the `score` command) | `test_the_score_command` |
+| `load_release` returned the stored facts, not the checked ones | Fixed | `test_loading_a_release_returns_the_checked_facts_not_the_stored_ones` (RED: 0.0 != 0.6407) |
+| Scans of one forgery in several conditions counted as several forgeries | Fixed: each pair carries its clean original; distinct originals are counted | `test_scans_of_one_forgery_in_several_conditions_count_as_one_forgery` (RED: 2 != 1) |
+| Pass marks could be inf or nan | Fixed: finite numbers only; JSON written without NaN | `test_a_pass_mark_must_be_a_finite_number` (RED: did not raise) |
+| A forgery's own author (the forger) needed no consent | Fixed: `forger_consent_id` must cover the use | `test_a_forger_without_a_valid_consent_is_counted_out` (RED: f2 still used) |
+| Two clean items could share a sample name | Fixed: the manifest is refused | `test_two_clean_items_may_not_share_a_sample_name` (RED: did not raise) |
+| A forger whose forgery gave no score still counted | Fixed: forgers come from the scored pairs only | `test_only_forgers_whose_forgeries_were_scored_count` (RED: 2 != 1) |
+
+## Phase 4: the score in a case (branch `feat/stage4-case-score`)
+
+| Step | Command | Result |
+|---|---|---|
+| RED | `pytest tests/test_score.py` | `AttributeError: module 'forensic_hand.work' has no attribute 'score_status'` (and `calibrate.verbal`) |
+| GREEN | `pytest` (whole suite) | all pass, 2 network tests skipped |
+| Lint | `ruff check src tests` | all checks passed |
+
+The first RED run also showed that the release check is real: before the test setup patched the
+signature check, OpenSSL refused the fake time stamp tokens ("there must be one signer").
+
+| # | What is guaranteed | Test |
+|---|---|---|
+| 1 | A case with no release is locked; the report says "No score" | `test_a_case_without_a_release_is_locked_and_the_report_says_so` |
+| 2 | A calibration file is not a release | `test_a_plain_calibration_file_is_not_a_release` |
+| 3 | A release whose stamp signatures cannot be checked is refused | `test_a_release_whose_stamps_cannot_be_checked_is_refused` |
+| 4 | A release gives a score and an LR inside its bounds, one ledger event, a read-only stored file | `test_a_release_gives_a_score_and_an_lr_in_the_ledger` |
+| 5 | The same release is stored once | `test_the_same_release_is_stored_once` |
+| 6 | The seal lists the release; the checker accepts a scored and sealed case | `test_the_checker_accepts_a_scored_and_sealed_case` |
+| 7 | The checker finds an LR that does not follow from its score, and a changed release file | `test_the_checker_recomputes_each_lr`, `test_the_checker_finds_a_changed_release_file` |
+| 8 | The report shows the LR, the propositions, the verbal equivalent and "The examiner decides" | `test_the_report_shows_the_lr_its_propositions_and_its_limits` |
+| 9 | Refused: another number of known crops, a known crop from a questioned item, another resolution, an unchecked case, a JPEG warning outside the tested conditions | `test_exactly_*`, `test_a_known_crop_*`, `test_a_resolution_*`, `test_a_case_that_was_not_checked_*`, `test_a_quality_warning_*` |
+| 10 | The verbal scale and the LR text | `test_the_verbal_scale` |
+| 11 | `fhand score` works and refuses a calibration file | `test_the_score_command` |
+| 12 | The workbench shows the lock, refuses a score without a release, and scores with one | `test_the_workbench_shows_the_lock_and_computes_a_score` |
 
 Known flaky test, not caused by Stage 4: `tests/test_server.py::test_a_large_body_is_refused` failed twice in
 full runs with a Windows `ConnectionAbortedError` (the server answers 413 before the client has sent the

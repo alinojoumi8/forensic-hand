@@ -238,6 +238,91 @@ def test_a_changed_release_file_is_refused(sets, good, tmp_path):
         release.save_release(bundle, path)
 
 
+def test_an_incomplete_lr_test_is_refused_without_a_crash(sets, good, tmp_path):
+    # CodeRabbit review 12: a missing Cllr used to stop the release with a KeyError.
+    from forensic_hand.validation import _results_hash
+
+    data = json.loads(good["dossier"].read_text(encoding="utf-8"))
+    del data["tasks"]["lr"]["cllr"]
+    data["results_sha256"] = _results_hash(data)
+    dossier = tmp_path / "dossier.json"
+    dossier.write_text(json.dumps(data), encoding="utf-8")
+    _stamp(dossier, T2)
+    with pytest.raises(release.ReleaseError, match="not complete"):
+        _release(sets, good["criteria"], dossier)
+
+
+def test_loading_a_release_returns_the_checked_facts_not_the_stored_ones(sets, good, tmp_path):
+    # CodeRabbit review 12: the stored summary was returned without a check.
+    bundle = _release(sets, good["criteria"], good["dossier"])
+    true_cllr = bundle["facts"]["summary"]["cllr"]
+    bundle["facts"]["summary"]["cllr"] = 0.0
+    path = tmp_path / "release.json"
+    path.write_text(json.dumps(bundle), encoding="utf-8")
+    assert release.load_release(path)["facts"]["summary"]["cllr"] == true_cllr
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_a_pass_mark_must_be_a_finite_number(sets, value):
+    # CodeRabbit review 12: inf and nan passed, and JSON readers reject them.
+    with pytest.raises(prereg.PreregError, match="finite"):
+        prereg.write_criteria(sets["real"], [sets["test_manifest"]], {**EASY, "cllr_max": value})
+    raw = json.dumps({"kind": "forensic-hand pass marks", "format": 1, "marks": {**EASY, "cllr_max": value}})
+    with pytest.raises(prereg.PreregError, match="finite"):
+        prereg.parse_criteria(raw.encode("ascii"))
+
+
+def test_a_forger_without_a_valid_consent_is_counted_out(sets, tmp_path):
+    # CodeRabbit review 12: a forgery is the forger's own writing, so the forger's consent must cover the use.
+    from forensic_hand.datasets import Manifest, usable_items
+
+    data = json.loads(sets["test_manifest"].read_text(encoding="utf-8"))
+    data["consent"] = {"required": True, "records": [{"consent_id": "w", "scopes": ["publish"]},
+                                                     {"consent_id": "f1", "scopes": ["publish"]},
+                                                     {"consent_id": "f2", "scopes": ["publish"], "withdrawn": True}]}
+    for item in data["items"]:
+        item["consent_id"] = "w"
+        if item["kind"] == "forgery-skilled":
+            item["forger_consent_id"] = "f1" if item["forger_id"] == "f1" else "f2"
+    used, excluded = usable_items(Manifest(data, sets["test_manifest"], "x" * 64), "publish")
+    forgers = {i.get("forger_id") for i in used if i["kind"] == "forgery-skilled"}
+    assert forgers == {"f1"} and excluded == {"forger consent withdrawn": 3}
+    last_forgery = [i for i in data["items"] if i["kind"] == "forgery-skilled" and i["forger_id"] == "f1"][-1]
+    del last_forgery["forger_consent_id"]
+    _, excluded = usable_items(Manifest(data, sets["test_manifest"], "x" * 64), "publish")
+    assert excluded.get("no forger consent record") == 1
+
+
+def test_two_clean_items_may_not_share_a_sample_name(sets):
+    # CodeRabbit review 12: a shared name made a degraded scan pair with the wrong writer.
+    from forensic_hand.datasets import DatasetError, check_manifest
+
+    data = json.loads(sets["test_manifest"].read_text(encoding="utf-8"))
+    clean = [i for i in data["items"] if i["stratum"] == "clean"]
+    clean[0]["sample"] = clean[1]["sample"] = "scan1"
+    with pytest.raises(DatasetError, match="sample name scan1"):
+        check_manifest(data)
+
+
+def test_only_forgers_whose_forgeries_were_scored_count(sets, tmp_path):
+    # CodeRabbit review 12: a forgery with no clear ink gives no LR, so its forger must not count.
+    from PIL import Image
+
+    synth.generate_dataset(tmp_path / "blank", writers=3, genuine=4, forgeries=2, seed=45, strata=("clean",),
+                           writer_prefix="b")
+    path = _as_real(tmp_path / "blank" / "manifest.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for item in data["items"]:
+        if item["kind"] == "forgery-skilled" and item["forger_id"] == "f2":
+            Image.new("RGB", (300, 150), (250, 250, 247)).save(path.parent / item["file"])
+            raw = (path.parent / item["file"]).read_bytes()
+            item["sha256"], item["size"] = hashlib.sha256(raw).hexdigest(), len(raw)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    lr = run_validation([path], purpose="publish", config=CFG, blur_samples=1, jpeg_samples=1,
+                        calibration=sets["real"])["tasks"]["lr"]
+    assert lr["forgers"] == 1
+
+
 def test_forger_ids_come_from_the_collection_spreadsheet(tmp_path):
     from PIL import Image
     for name in ("a.png", "b.png"):

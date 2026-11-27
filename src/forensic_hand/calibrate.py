@@ -141,13 +141,13 @@ def _load_sets(manifest_paths, purpose: str):
 
 
 def labelled_scores(sets, cfg: dict, propositions: str, strata=None) -> dict:
-    """Same-writer and Hd scores, each as (score, writer_id), inside the chosen strata."""
+    """Same-writer and Hd scores, each as (score, writer_id, source), inside the chosen strata."""
     from .validation import score_comparisons
 
     comparisons = score_comparisons(sets, cfg)
     chosen = sorted(comparisons) if strata is None else sorted(s for s in comparisons if s in set(strata))
-    same = [(x, w) for s in chosen for x, w in comparisons[s]["positives"] if x is not None]
-    diff = [(x, w) for s in chosen for x, w in comparisons[s][propositions] if x is not None]
+    same = [c for s in chosen for c in comparisons[s]["positives"] if c[0] is not None]
+    diff = [c for s in chosen for c in comparisons[s][propositions] if c[0] is not None]
     return {"strata": chosen, "outside": sorted(s for s in comparisons if s not in chosen),
             "same": same, "diff": diff}
 
@@ -160,7 +160,7 @@ def calibrate(manifest_paths, propositions: str, config: dict | None = None, str
     sets, described, excluded = _load_sets(manifest_paths, "calibrate")
     scores = labelled_scores(sets, cfg, propositions, strata)
     same, diff = scores["same"], scores["diff"]
-    writers = sorted({w for _, w in same} | {w for _, w in diff})
+    writers = sorted({c[1] for c in same} | {c[1] for c in diff})
     if len(same) < MIN_PAIRS or len(diff) < MIN_PAIRS or len(writers) < MIN_WRITERS:
         left = "; ".join(f"{k}: {v}" for k, v in sorted(excluded.items())) or "none"
         raise CalibrationError(
@@ -168,10 +168,11 @@ def calibrate(manifest_paths, propositions: str, config: dict | None = None, str
             f"from {len(writers)} writer(s); at least {MIN_PAIRS} of each and {MIN_WRITERS} writers are needed "
             f"(items left out: {left}). Each writer needs {cfg['score_min_known'] + 1} or more clean genuine "
             "signatures.")
-    a_ln, b_ln = fit([x for x, _ in same], [x for x, _ in diff])
+    same_x, diff_x = [c[0] for c in same], [c[0] for c in diff]
+    a_ln, b_ln = fit(same_x, diff_x)
     a, b = a_ln / math.log(10), b_ln / math.log(10)
-    raw_same = [a * x + b for x, _ in same]
-    raw_diff = [a * x + b for x, _ in diff]
+    raw_same = [a * x + b for x in same_x]
+    raw_diff = [a * x + b for x in diff_x]
     lower, upper = bounds(raw_same, raw_diff)
     fitted_same = [min(upper, max(lower, v)) for v in raw_same]
     fitted_diff = [min(upper, max(lower, v)) for v in raw_diff]
@@ -193,7 +194,7 @@ def calibrate(manifest_paths, propositions: str, config: dict | None = None, str
                  "pairs": {"same": len(same), "different": len(diff)}},
         "fit": {"note": "measured on the calibration data itself; a validation on other writers is needed",
                 "cllr": round(metrics.cllr(fitted_same, fitted_diff), 6),
-                "cllr_min": round(metrics.cllr_min([x for x, _ in same], [x for x, _ in diff]), 6)},
+                "cllr_min": round(metrics.cllr_min(same_x, diff_x), 6)},
         "created_claimed": utc_now(),
     }
     body["results_sha256"] = _hash(body)
@@ -240,6 +241,31 @@ def check_settings(body: dict, cfg: dict) -> None:
     if body.get("score_settings") != score_settings(cfg):
         raise CalibrationError("the calibration was made with other score settings or another feature version; "
                                "make a new calibration with the present settings")
+
+
+# Verbal equivalents after the ENFSI Guideline for Evaluative Reporting (2015): upper log10 LR of each band.
+# Check them against the scale your laboratory uses before you quote one.
+VERBAL = ((1, "weak support"), (2, "moderate support"), (3, "moderately strong support"), (4, "strong support"),
+          (6, "very strong support"), (math.inf, "extremely strong support"))
+VERBAL_SOURCE = ("after the ENFSI Guideline for Evaluative Reporting (2015): LR 1 to 10 weak, 10 to 100 moderate, "
+                 "100 to 1,000 moderately strong, 1,000 to 10,000 strong, 10,000 to 1,000,000 very strong, above "
+                 "1,000,000 extremely strong support")
+
+
+def verbal(log10_lr: float) -> str:
+    size = abs(float(log10_lr))
+    if size < 1e-9:
+        return "no support for either proposition"
+    word = next(text for upper, text in VERBAL if size <= upper)
+    return f"{word} for {'Hp' if log10_lr > 0 else 'Hd'}"
+
+
+def lr_text(log10_lr: float) -> str:
+    """The LR as people read it: 100, 2.0, 1/10."""
+    size = abs(float(log10_lr))
+    value = 10 ** size
+    text = f"{value:,.0f}" if value >= 10 else f"{value:.1f}"
+    return text if log10_lr >= 0 else f"1/{text}"
 
 
 def apply(body: dict, score: float, config: dict | None = None) -> dict:
