@@ -92,10 +92,16 @@ Then check it and run the validation:
    down, and run `fhand dataset split manifest.json --seed <seed>`. It writes one manifest for each group
    beside the source. Consent places a writer who agreed to only one of the two uses; the seed places the
    others. Read its caution about people whose handwriting is in both groups: if one forger imitated writers
-   of both groups, the test is not fully apart from the calibration. Better: split before the forgery sessions
-   (a manifest of the genuine signatures is enough; with the same writers, consent and seed the groups stay
-   the same later), then let each forger imitate writers of one group only. The forger ids and the writer ids
-   must use the same pseudonym for one person, or the check cannot see it.
+   of both groups, the test is not fully apart from the calibration. The forger ids and the writer ids must
+   use the same pseudonym for one person, or the check cannot see it.
+
+   Better: split before the forgery sessions, so that each forger imitates writers of one group only.
+   1. Build a manifest of the genuine signatures only, for example `genuine.json`, and split it with your seed.
+      Each new manifest lists its writers under `split.writers`. Give each forger writers of one group only.
+   2. After the forgery sessions, build the full manifest under a new name, for example `pilot.json`, and split
+      it again with the same seed. With the same writers and the same consent, the groups stay the same; the
+      new manifests (`pilot-fit.json`, `pilot-test.json`) now hold the forgeries too.
+   3. Use these last two for the steps below. Keep the first two only as the record of the plan.
 2. Run `fhand calibrate` on the first group only.
 3. Write the pass marks with `fhand prereg` and stamp them with `fhand stamp-file`. Agree the marks with
    practising examiners first. Do not open the test data before the stamp.
