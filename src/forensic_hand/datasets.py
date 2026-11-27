@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -410,3 +411,89 @@ def build_from_names(folder, title, license_class, license_name, preset=None, pa
     if out:
         save_manifest(manifest, out)
     return manifest
+
+
+# ---------------------------------------------------------------- a fit group and a test group (Stage 4, Phase 5)
+
+SPLIT_GROUPS = {"fit": "calibrate", "test": "publish"}
+SPLIT_METHOD = ("writers in the order of the SHA-256 of '<seed>:<writer id>' (hex text); the first floor(test share x "
+                "writers) of the writers free to join either group go to the test group, after the writers that "
+                "consent places in one group only")
+
+
+def _split_key(seed: int, writer: str) -> str:
+    return hashlib.sha256(f"{seed}:{writer}".encode("utf-8")).hexdigest()
+
+
+def _writers_for(manifest: Manifest, purpose: str) -> set[str]:
+    """Writers with at least one genuine signature that may be used for this purpose."""
+    used, _ = usable_items(manifest, purpose)
+    return {i["writer_id"] for i in used if i["kind"] == "genuine"}
+
+
+def split_manifest(path, seed: int, test_share: float = 0.5, fit_out=None, test_out=None,
+                   dry_run: bool = False) -> dict:
+    """Split a collection into a fit group (to calibrate) and a test group (to publish) with no writer in both.
+
+    Each item goes with its writer; a skilled forgery goes with the writer it imitates. The order of the
+    writers comes from the seed (see SPLIT_METHOD), so anyone can repeat the split. Consent decides first: a
+    writer whose consent covers only calibrate joins the fit group, only publish the test group, and neither is
+    left out. Split before you look at any result, and write the seed down. People whose handwriting is in both
+    groups (for example a forger who imitated writers of both groups) are reported, not moved.
+    """
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise DatasetError("the seed must be a whole number")
+    if isinstance(test_share, bool) or not isinstance(test_share, int | float) or not math.isfinite(test_share) \
+            or not 0 < test_share < 1:
+        raise DatasetError("the test share must be a number between 0 and 1, for example 0.5")
+    source = load_manifest(path)
+    outs = {g: Path(out) if out else source.path.with_name(f"{source.path.stem}-{g}.json")
+            for g, out in (("fit", fit_out), ("test", test_out))}
+    for group, out in outs.items():
+        if out.resolve().parent != source.folder.resolve():
+            raise DatasetError(f"save the {group} manifest in the folder of the source manifest, so that its "
+                               f"file paths stay right: {out}")
+        if not dry_run and out.exists():
+            raise DatasetError(f"the file exists already; choose a new name: {out}")
+    if outs["fit"].resolve() == outs["test"].resolve():
+        raise DatasetError("the fit manifest and the test manifest need two different names")
+
+    writers = sorted({i["writer_id"] for i in source.items})
+    can_fit, can_test = _writers_for(source, "calibrate"), _writers_for(source, "publish")
+    forced = {"fit": [w for w in writers if w in can_fit and w not in can_test],
+              "test": [w for w in writers if w in can_test and w not in can_fit]}
+    left_out = [w for w in writers if w not in can_fit and w not in can_test]
+    free = sorted((w for w in writers if w in can_fit and w in can_test), key=lambda w: _split_key(seed, w))
+    # Round down, so that at a share of one half the fit group is never the smaller one.
+    take = min(max(math.floor(test_share * (len(writers) - len(left_out))) - len(forced["test"]), 0), len(free))
+    groups = {"fit": sorted(forced["fit"] + free[take:]), "test": sorted(forced["test"] + free[:take])}
+    if not groups["fit"] or not groups["test"]:
+        raise DatasetError(f"the split needs writers in both groups: {len(groups['fit'])} for fit, "
+                           f"{len(groups['test'])} for test ({len(left_out)} left out)")
+
+    group_of = {w: g for g, ws in groups.items() for w in ws}
+    kept = {g: [i for i in source.items if group_of.get(i["writer_id"]) == g] for g in groups}
+    people = {g: set(groups[g]) | {i["forger_id"] for i in kept[g] if i.get("forger_id")} for g in groups}
+    both = sorted(people["fit"] & people["test"])
+    lic = source.data["license"]["class"]
+    summary = {"source": str(source.path), "source_manifest_sha256": source.manifest_sha256, "seed": seed,
+               "test_share": test_share, "method": SPLIT_METHOD, "forced": forced, "left_out": left_out,
+               "people_in_both_groups": both, "license_class": lic,
+               "license_allows": {p: p in LICENSE_USES[lic] for p in SPLIT_GROUPS.values()}}
+    for g in groups:
+        summary[g] = {"path": str(outs[g]), "purpose": SPLIT_GROUPS[g], "writers": groups[g], "items": len(kept[g])}
+    if dry_run:
+        return summary
+    for g, other in (("fit", "test"), ("test", "fit")):
+        named = {i.get(k) for i in kept[g] for k in ("consent_id", "forger_consent_id")} - {None}
+        data = {**source.data, "items": kept[g],
+                "title": f"{source.data['title']} ({g} group, split seed {seed})",
+                "consent": {**source.data["consent"],
+                            "records": [r for r in source.data["consent"]["records"] if r["consent_id"] in named]},
+                "split": {"group": g, "purpose": SPLIT_GROUPS[g], "seed": seed, "test_share": test_share,
+                          "method": SPLIT_METHOD, "source_manifest_sha256": source.manifest_sha256,
+                          "writers": groups[g], "other_group_writers": len(groups[other]),
+                          "left_out": left_out, "people_in_both_groups": both}}
+        check_manifest(data)
+        save_manifest(data, outs[g])
+    return summary

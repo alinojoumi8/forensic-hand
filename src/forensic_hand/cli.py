@@ -201,6 +201,37 @@ def cmd_dataset_import(args) -> int:
     return 0
 
 
+def cmd_dataset_split(args) -> int:
+    from .datasets import split_manifest
+
+    done = split_manifest(args.manifest, seed=args.seed, test_share=args.test_share, fit_out=args.fit_out,
+                          test_out=args.test_out, dry_run=args.dry_run)
+    _say(f"Split with seed {done['seed']}, test share {done['test_share']}. "
+         "Order: the SHA-256 of '<seed>:<writer id>', so anyone can repeat it.")
+    for group, label in (("fit", "Fit group (to calibrate)"), ("test", "Test group (to publish)")):
+        part = done[group]
+        _say(f"{label}: {len(part['writers'])} writer(s), {part['items']} item(s) -> {part['path']}")
+    if done["forced"]["fit"] or done["forced"]["test"]:
+        _say(f"Placed by consent: {len(done['forced']['fit'])} writer(s) may only calibrate, "
+             f"{len(done['forced']['test'])} may only publish.")
+    if done["left_out"]:
+        _say(f"Left out: {len(done['left_out'])} writer(s) with no genuine signature that may be used to calibrate "
+             "or to publish: " + ", ".join(done["left_out"][:10]) + (" ..." if len(done["left_out"]) > 10 else ""))
+    if done["people_in_both_groups"]:
+        _say(f"Caution: {len(done['people_in_both_groups'])} person(s) have handwriting in both groups (for example "
+             "a forger who imitated writers of both groups): " + ", ".join(done["people_in_both_groups"][:10])
+             + ". The test is then not fully apart from the calibration.")
+    if not all(done["license_allows"].values()):
+        _say(f"The licence ({done['license_class']}) does not allow calibrate and publish: "
+             "use these groups for internal benchmarks only.")
+    if args.dry_run:
+        _say("Dry run: nothing was written.")
+    else:
+        _say("Next: calibrate on the fit group. Write and stamp the pass marks (prereg, stamp-file) "
+             "before you open the test group.")
+    return 0
+
+
 def cmd_calibrate(args) -> int:
     from .calibrate import calibrate, save_calibration
 
@@ -501,6 +532,16 @@ def build_parser() -> argparse.ArgumentParser:
                                  "(default: manifest.json in the folder)")
     q.add_argument("--dry-run", action="store_true", help="show what matches; write nothing")
     q.set_defaults(func=cmd_dataset_import)
+    q = dsub.add_parser("split", help="split a collection into a fit group and a test group of writers (Stage 4)")
+    q.add_argument("manifest")
+    q.add_argument("--seed", type=int, required=True,
+                   help="a whole number; choose it and write it down before you look at any result")
+    q.add_argument("--test-share", type=float, default=0.5,
+                   help="share of the writers in the test group (default: %(default)s)")
+    q.add_argument("--fit-out", help="fit manifest, beside the source (default: <name>-fit.json)")
+    q.add_argument("--test-out", help="test manifest, beside the source (default: <name>-test.json)")
+    q.add_argument("--dry-run", action="store_true", help="show the groups; write nothing")
+    q.set_defaults(func=cmd_dataset_split)
 
     p = sub.add_parser("validate", help="measure the screens on labelled data and write a dossier")
     p.add_argument("manifests", nargs="+", metavar="MANIFEST")

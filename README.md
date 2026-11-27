@@ -1,6 +1,7 @@
 # forensic-hand
 
-Sealed intake for forensic document examination. It runs on your computer. This is Stage 1.
+Sealed intake for forensic document examination. It runs on your computer. Stages 1 to 4 are built;
+the writer score stays locked until a test on real, consented data passes (Phase 5).
 
 It helps a human examiner. **It does not decide if a signature is genuine.**
 
@@ -85,6 +86,18 @@ A screen is only useful when its error rates are known. Stage 3 measures them.
   It needs 6 or more genuine signatures per writer: make the data with `--genuine 8 --forgeries 3`.
 - Every dataset has a manifest with file hashes, a licence class and optional consent records.
   Research-only data may be used for internal benchmarks only; unknown licences are refused.
+- `dataset split` makes the two groups from one real collection, before anyone looks at a result: a **fit
+  group** (to calibrate) and a **test group** (to publish), with no writer in both. Each item goes with its
+  writer; a skilled forgery goes with the writer it imitates. The order comes from the seed (the SHA-256 of
+  `<seed>:<writer id>`), so anyone can repeat the split; write the seed down. Consent decides first: a writer
+  who agreed to calibrate only joins the fit group, publish only the test group. At a share of one half the
+  fit group is never the smaller one. It warns about people whose handwriting is in both groups, for example
+  a forger who imitated writers of both groups.
+
+```powershell
+.\.venv\Scripts\fhand.exe dataset split data\pilot\manifest.json --seed 20270115 --dry-run
+```
+
 - `calibrate` turns the raw score into a **likelihood ratio (LR)**: how much more likely the score is if
   the known writer wrote the signature (Hp) than if someone else did (Hd: a skilled forger, or a random
   other writer). The LR is kept inside bounds that the amount of data supports. Licence and consent must
@@ -201,6 +214,7 @@ and the workbench Score button says **Locked**.
 | `fhand dataset verify MANIFEST` | Check every file of a dataset against its manifest |
 | `fhand dataset build FOLDER --csv items.csv ...` | Make a manifest for a real collection |
 | `fhand dataset import FOLDER --preset cedar\|bhsig260 (or --pattern ...) ...` | Make a manifest from file names (public sets) |
+| `fhand dataset split MANIFEST --seed N [--test-share 0.5] [--dry-run]` | Split a collection into a fit group and a test group of writers |
 | `fhand validate MANIFEST --out FOLDER [--tasks ...] [--calibration FILE]` | Measure the screens (and the LRs of a calibration) and write a validation dossier |
 | `fhand calibrate MANIFEST --propositions skilled-forgery\|other-writer --out FILE` | Fit the writer score to a likelihood ratio |
 | `fhand prereg CALIBRATION --test MANIFEST --out FILE [--cllr-max 0.5 ...]` | Write the pass marks before the test |

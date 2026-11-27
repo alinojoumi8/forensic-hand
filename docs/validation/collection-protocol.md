@@ -88,7 +88,14 @@ Then check it and run the validation:
 ## 7. Split, pass marks, then the test (Stage 4)
 
 1. Before you look at any results, split the writers into two groups: one to calibrate (consent scope
-   `calibrate`) and one to test (consent scope `publish`). No writer may be in both. Make one manifest each.
+   `calibrate`) and one to test (consent scope `publish`). No writer may be in both. Choose a seed, write it
+   down, and run `fhand dataset split manifest.json --seed <seed>`. It writes one manifest for each group
+   beside the source. Consent places a writer who agreed to only one of the two uses; the seed places the
+   others. Read its caution about people whose handwriting is in both groups: if one forger imitated writers
+   of both groups, the test is not fully apart from the calibration. Better: split before the forgery sessions
+   (a manifest of the genuine signatures is enough; with the same writers, consent and seed the groups stay
+   the same later), then let each forger imitate writers of one group only. The forger ids and the writer ids
+   must use the same pseudonym for one person, or the check cannot see it.
 2. Run `fhand calibrate` on the first group only.
 3. Write the pass marks with `fhand prereg` and stamp them with `fhand stamp-file`. Agree the marks with
    practising examiners first. Do not open the test data before the stamp.

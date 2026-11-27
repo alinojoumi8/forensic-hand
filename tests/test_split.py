@@ -28,7 +28,7 @@ def _people(tmp_path, writers=20, genuine=3, forgeries=2, forgers=("f1", "f2"), 
     all forgers agree to everything.
     """
     folder = tmp_path / "set"
-    folder.mkdir()
+    folder.mkdir(parents=True)
     blank = Image.new("L", (24, 12), 255)
     items, people = [], set()
     for w in range(1, writers + 1):
@@ -93,6 +93,12 @@ def test_the_test_share_sets_the_group_sizes(tmp_path):
     assert (len(done["test"]["writers"]), len(done["fit"]["writers"])) == (5, 15)
 
 
+def test_the_fit_group_is_never_the_smaller_one_at_half(tmp_path):
+    # The protocol: the calibration group should be at least as large as the test group.
+    done = ds.split_manifest(_people(tmp_path, writers=23), seed=1, dry_run=True)
+    assert (len(done["test"]["writers"]), len(done["fit"]["writers"])) == (11, 12)
+
+
 def test_consent_decides_the_group_a_writer_may_join(tmp_path):
     scopes = {"w01": ["calibrate"], "w02": ["publish"], "w03": ["benchmark"]}
     done = ds.split_manifest(_people(tmp_path, scopes=scopes), seed=7)
@@ -101,6 +107,13 @@ def test_consent_decides_the_group_a_writer_may_join(tmp_path):
     test = ds.load_manifest(done["test"]["path"])
     assert "w03" not in _writers(test) | _writers(ds.load_manifest(done["fit"]["path"]))
     assert {r["consent_id"] for r in test.data["consent"]["records"]} >= {"c-w02", "c-f1", "c-f2"}
+
+
+def test_a_split_before_the_forgeries_gives_the_same_groups_later(tmp_path):
+    # The protocol tells collectors to split before the forgery sessions; the groups must not move afterwards.
+    before = ds.split_manifest(_people(tmp_path / "a", forgeries=0), seed=11, dry_run=True)
+    after = ds.split_manifest(_people(tmp_path / "b", forgeries=2), seed=11, dry_run=True)
+    assert before["test"]["writers"] == after["test"]["writers"] and before["fit"]["writers"] == after["fit"]["writers"]
 
 
 def test_a_person_in_both_groups_is_reported(tmp_path):
