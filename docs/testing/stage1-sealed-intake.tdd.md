@@ -273,3 +273,8 @@ Held-out result (fresh seed 3, 12 writers, 840 items; synthetic only), copies ca
 Known limits: a stamp in the pen's colour or a near hue (violet over blue, 18 degrees apart) is not
 separated; a stamp darker than the pen would be kept instead of the pen. The copy check records the kept
 and removed colours so that the examiner can check. Real stamps and scanners are not tested yet.
+
+## CodeRabbit review 9 (stamp fix, 2026-11-27)
+
+Command: `coderabbit review --committed --base-commit 7c8372c --agent` (the stamp-fix commit). 0 findings.
+A first run stopped when the session ended; it was run again in full.
