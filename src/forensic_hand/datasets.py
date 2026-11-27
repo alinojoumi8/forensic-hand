@@ -144,6 +144,28 @@ def new_manifest(title, license_class, license_name, items, folder, consent=None
     return data
 
 
+def _manifest_root(folder, out) -> tuple[Path, str]:
+    """The folder that the file paths start from, and the path from it to the picture folder ("" or "a/b/").
+
+    A manifest reads its files relative to its own folder (see Manifest.folder and verify). So a manifest
+    saved in a folder above the pictures gets longer paths, and one saved anywhere else is refused.
+    """
+    folder = Path(folder)
+    if out is None:
+        return folder, ""
+    base, pictures = Path(out).resolve().parent, folder.resolve()
+    if base == pictures:
+        return folder, ""
+    if base not in pictures.parents:
+        raise DatasetError("save the manifest in the picture folder or in a folder above it, "
+                           f"so that it can find the pictures: {out}")
+    return base, pictures.relative_to(base).as_posix() + "/"
+
+
+def _rebased(items: list[dict], prefix: str) -> list[dict]:
+    return [{**item, "file": _safe_file(prefix + item["file"])} for item in items] if prefix else items
+
+
 def save_manifest(data: dict, path) -> None:
     Path(path).write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="utf-8")
 
@@ -244,8 +266,10 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
     so that the validation can pair it; a clean original needs no sample.
     consent.csv columns: consent_id, scopes (separated by ;), date, withdrawn (yes or no).
     Use pseudonymous writer ids. Keep the list of real names somewhere else.
+    The `file` column is the path inside the folder. Save the manifest in the folder or in a folder above it.
     """
     folder = Path(folder)
+    root, prefix = _manifest_root(folder, out)
     try:
         with open(items_csv, newline="", encoding="utf-8-sig") as fh:
             rows = list(csv.DictReader(fh))
@@ -274,8 +298,8 @@ def build_from_csv(folder, items_csv, title, license_class, license_name, consen
             if (row.get(key) or "").strip():
                 item[key] = row[key].strip()
         items.append(item)
-    manifest = new_manifest(title, license_class, license_name, items, folder, consent=consent, synthetic=False,
-                            license_url=license_url, notes=notes)
+    manifest = new_manifest(title, license_class, license_name, _rebased(items, prefix), root, consent=consent,
+                            synthetic=False, license_url=license_url, notes=notes)
     if out:
         save_manifest(manifest, out)
     return manifest
@@ -364,7 +388,10 @@ def build_from_names(folder, title, license_class, license_name, preset=None, pa
 
     Public signature sets usually allow non-commercial research only: register them as research-only,
     and the tool will use them for internal benchmarks only.
+    The pattern is for the path inside the folder. Save the manifest (out) in the folder or in a folder
+    above it; the import summary then says which folder the pattern was used in.
     """
+    root, prefix = _manifest_root(folder, out)
     if preset is not None:
         if preset not in PRESETS:
             raise DatasetError(f"unknown preset {preset}; the presets are: {', '.join(PRESETS)}")
@@ -374,10 +401,11 @@ def build_from_names(folder, title, license_class, license_name, preset=None, pa
     if not pattern:
         raise DatasetError("give a preset or a pattern")
     items, summary = scan_names(folder, pattern, genuine, forgery)
-    summary = {"preset": preset, **summary}
+    summary = {"preset": preset, "folder": prefix.rstrip("/") or ".", **summary}
+    items = _rebased(items, prefix)
     if dry_run:
         return {"import": summary, "items": items}
-    manifest = new_manifest(title, license_class, license_name, items, folder, synthetic=False,
+    manifest = new_manifest(title, license_class, license_name, items, root, synthetic=False,
                             license_url=license_url, notes=notes, extra={"import": summary})
     if out:
         save_manifest(manifest, out)

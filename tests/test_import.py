@@ -192,8 +192,11 @@ def test_the_import_command_writes_a_manifest_above_the_folder(tmp_path, capsys)
     assert main([*base, "--out", str(tmp_path / "set" / "m.json")]) == 0
     assert main(["dataset", "verify", str(tmp_path / "set" / "m.json")]) == 0
     capsys.readouterr()
-    assert main([*base, "--out", str(tmp_path / "elsewhere.json")]) == 2
-    assert "above" in capsys.readouterr().err and not (tmp_path / "elsewhere.json").exists()
+    beside = tmp_path / "set" / "other" / "m.json"                    # not above the pictures
+    beside.parent.mkdir()
+    for dry in ([], ["--dry-run"]):                                   # a dry run checks the place too
+        assert main([*base, *dry, "--out", str(beside)]) == 2
+        assert "above" in capsys.readouterr().err and not beside.exists()
 
 
 # ---------------------------------------------------------------- research-only data in use

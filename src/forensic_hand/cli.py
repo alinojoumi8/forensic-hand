@@ -183,7 +183,7 @@ def cmd_dataset_import(args) -> int:
         raise DatasetError(f"the file exists already; choose a new name: {out}")
     done = build_from_names(args.folder, title=args.title, license_class=args.license_class,
                             license_name=args.license_name, preset=args.preset, pattern=args.pattern,
-                            genuine=args.genuine, forgery=args.forgery, out=None if args.dry_run else out,
+                            genuine=args.genuine, forgery=args.forgery, out=out,   # a dry run writes nothing
                             license_url=args.license_url, dry_run=args.dry_run)
     facts = done["import"]
     _say(f"{facts['matched']} picture(s) match: {facts['writers']} writer(s), {facts['genuine_items']} genuine, "
@@ -481,7 +481,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--license-name", required=True)
     q.add_argument("--license-url")
     q.add_argument("--consent", help="consent CSV: consent_id, scopes (a;b), date, withdrawn")
-    q.add_argument("--out", help="manifest file (default: manifest.json in the folder)")
+    q.add_argument("--out", help="manifest file, in the folder or in a folder above it "
+                                 "(default: manifest.json in the folder)")
     q.set_defaults(func=cmd_dataset_build)
     q = dsub.add_parser("import", help="make a manifest for a set whose file names say the writer and the kind")
     q.add_argument("folder", help="the folder of the set (sub-folders are read too)")
@@ -496,7 +497,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="most public signature sets are research-only")
     q.add_argument("--license-name", required=True)
     q.add_argument("--license-url")
-    q.add_argument("--out", help="manifest file (default: manifest.json in the folder)")
+    q.add_argument("--out", help="manifest file, in the folder or in a folder above it "
+                                 "(default: manifest.json in the folder)")
     q.add_argument("--dry-run", action="store_true", help="show what matches; write nothing")
     q.set_defaults(func=cmd_dataset_import)
 
